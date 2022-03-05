@@ -12,7 +12,7 @@ import pandas as pd
 from onpolicy.config import get_config
 from gym.spaces import Discrete
 from tensorboardX import SummaryWriter
-from tqdm import tqdm,trange
+from tqdm import trange, tqdm
 
 """Train script for SMAC."""
 
@@ -237,7 +237,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
         device = torch.device("cpu")
         torch.set_num_threads(all_args.n_training_threads)
 
-    run_dir = '../../results/population_idv_mappo_turn_update/'
+    run_dir = '../../results/population_idv_mappo_total_update/'
     run_dir = run_dir + 'run{}'.format(i)
     run_dir = Path(run_dir)
 
@@ -317,7 +317,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
 
 if __name__ == "__main__":
     seeds = [2021, 2022, 114, 2, 2021114]
-    test_policy_list = ['control_idv_mappo', 'population_idv_mappo', 'population_idv_mappo_total_update']
+    test_policy_list = ['control_idv_mappo', 'population_idv_mappo_turn_update', 'population_idv_mappo']
     for i in range(len(seeds)):
         print('seed = {}'.format(seeds[i]))
         mean_rewards = []
@@ -340,4 +340,4 @@ if __name__ == "__main__":
             tmp = pd.DataFrame({'seed': seed, 'mean_episode_reward': mean_rewards})
             res = res.append(tmp)
     print(res)
-    res.to_csv('../../results/mappo_turn_update_test_generalization_result.csv', index=False)
+    res.to_csv('../../results/mappo_total_update_test_generalization_result.csv', index=False)

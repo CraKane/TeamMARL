@@ -160,7 +160,7 @@ class Runner(object):
 
     def restore(self, eval = False, team=(0, 1, 2)):
         """Restore policy's networks from a saved model."""
-        np.random.shuffle(self.pers)
+        # np.random.shuffle(self.pers)
         if not self.use_eval:
             self.agent_ids = self.pers[np.random.randint(4)]
         if self.all_args.idv_para:
