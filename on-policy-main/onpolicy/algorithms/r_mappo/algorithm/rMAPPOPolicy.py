@@ -113,7 +113,7 @@ class R_MAPPOPolicy:
             x = _t2n(x)
         return np.array(np.reshape(x, [-1, self.args.num_agents, *np.shape(x)[1:]]))
     def get_actions(self, cent_obs, obs, rnn_states_actor, rnn_states_critic, masks, available_actions=None,
-                    deterministic=False, fix_action=-1):
+                    deterministic=False, fix_action=None):
         """
         Compute actions and value function predictions for the given inputs.
         :param cent_obs (np.ndarray): centralized input to the critic.
@@ -165,7 +165,7 @@ class R_MAPPOPolicy:
                                                                                                    avail_input_i,
                                                                                                    deterministic)
                 idv_values, idv_rnn_states_critic = self.critic[i](cent_obs[:, i, :], rnn_states_critic[:, i, :], masks[:, i, :])
-                if self.args.use_eval and i == self.args.num_agents - 1 and fix_action:
+                if self.args.use_eval and i == self.args.num_agents - 1 and fix_action != None:
                     actions.append(torch.tensor([[fix_action]]).to('cuda:0'))
                 else:
                     actions.append(idv_actions)
@@ -322,7 +322,7 @@ class R_MAPPOPolicy:
 
         values, _ = self.critic[update_index](cent_obs, rnn_states_critic, masks)
         return values, action_log_probs, dist_entropy
-    def act(self, obs, rnn_states_actor, masks, available_actions=None, deterministic=False, fix_action=-1):
+    def act(self, obs, rnn_states_actor, masks, available_actions=None, deterministic=False, fix_action=None):
         """
         Compute actions using the given inputs.
         :param obs (np.ndarray): local agent inputs to the actor.
@@ -354,7 +354,7 @@ class R_MAPPOPolicy:
                                                                                         masks[:, i, :],\
                                                                                         avail_input_i,\
                                                                                         deterministic)
-                if self.args.use_eval and i == self.args.num_agents - 1 and fix_action:
+                if self.args.use_eval and i == self.args.num_agents - 1 and fix_action != None:
                     actions.append(torch.tensor([[fix_action]]).to('cuda:0'))
                 else:
                     actions.append(idv_actions)

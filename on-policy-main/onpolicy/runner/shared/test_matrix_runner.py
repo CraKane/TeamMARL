@@ -19,6 +19,7 @@ class MatrixRunner(Runner):
     def run(self, fix_action):
         episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
         eval_step_rewards = []
+        self.restore()
         for episode in range(episodes):
 
             eval_episode = 0

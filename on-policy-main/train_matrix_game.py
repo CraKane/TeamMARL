@@ -34,6 +34,7 @@ def make_mat_game_from_file(filename):
         init_state = 0
         env = MatrixGame(r_mat, trans_mat, init_state, end_state, max_episode_length,evaluate_mat=True)
         return env
+        
 class MatrixGame:
     def __init__(self,r_mat,trans_mat,init_state,end_state,max_episode_length,evaluate_mat=False):
         r_shape = np.shape(r_mat)
@@ -257,7 +258,7 @@ def main(args, seed):
     # env
     all_args.map_name = 'random_matrix_game_3_symmetric'
     envs = make_mat_game_from_file('{}.pkl'.format(all_args.map_name))
-    eval_envs = make_mat_game_from_file('{}.pkl'.format(all_args.map_name)) if all_args.check_eval else None
+    eval_envs =  make_mat_game_from_file('{}.pkl'.format(all_args.map_name)) if all_args.use_eval else None
     env_info = envs.get_env_info()
     num_agents = env_info["n_agents"]
     all_args.num_agents = num_agents
@@ -268,45 +269,27 @@ def main(args, seed):
         "eval_envs": eval_envs,
         "num_agents": num_agents,
         "device": device,
-        "run_dir": run_dir
+        "run_dir": run_dir,
+        "eval_policy_dir": None
     }
-
-    # build populations
-    from build_population import build as Create
-
-    Create(run_dir= run_dir,
-        num_agents=num_agents,
-        args=all_args,
-        obs_space=envs.observation_space[0], 
-        sobs_space=envs.share_observation_space[0], 
-        act_space=envs.action_space[0],
-        device=device)
-              
 
     # run experiments
     from onpolicy.runner.shared.matrix_runner import MatrixRunner as Runner
 
-    # create combination
-    from itertools import combinations
 
-    pers = list(combinations(range(num_agents+1), num_agents))
+    runner = Runner(config)
+    runner.run()
 
-    for per in pers:
-        print(per)
-        config['agent_ids'] = per
-        runner = Runner(config)
-        runner.run()
+    # post process
+    envs.close()
+    if all_args.use_eval and eval_envs is not envs:
+        eval_envs.close()
 
-        # post process
-        envs.reset()
-        if all_args.use_eval and eval_envs is not envs:
-            eval_envs.reset()
-
-        if all_args.use_wandb:
-            run.finish()
-        else:
-            runner.writter.export_scalars_to_json(str(runner.log_dir + '/summary.json'))
-            runner.writter.close()
+    if all_args.use_wandb:
+        run.finish()
+    else:
+        runner.writter.export_scalars_to_json(str(runner.log_dir + '/summary.json'))
+        runner.writter.close()
 
 
 if __name__ == "__main__":

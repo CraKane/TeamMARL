@@ -38,6 +38,10 @@ def make_mat_game_from_file(filename):
         r_mat = matrix_para['reward']
 
         trans_mat = matrix_para['trans_mat']
+        # pers = [(0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 1, 0), (2, 0, 1)]
+        # for per in pers:
+        #     print(r_mat[0][per])
+        #     print(trans_mat[0][per])
         end_state = np.zeros(np.shape(r_mat)[0])
         state_num = np.shape(r_mat)[0]
         max_episode_length = int(state_num * 1.33)
@@ -212,7 +216,7 @@ def parse_args(args, parser):
     return all_args
 
 
-def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_policy=None):
+def main(args, seed, i, fix_action=None):
     parser = get_config()
     all_args = parse_args(args, parser)
 
@@ -237,7 +241,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
         device = torch.device("cpu")
         torch.set_num_threads(all_args.n_training_threads)
 
-    run_dir = '../../results/control_idv_mappo/'
+    run_dir = 'C:/workspace/codes/results/population_idv_mappo_turn_update/'
     run_dir = run_dir + 'run{}'.format(i)
     run_dir = Path(run_dir)
 
@@ -280,8 +284,8 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
         "num_agents": num_agents,
         "device": device,
         "run_dir": run_dir,
-        "eval_policy_dir": '../../results/' + test_policy + '/run{}/models'.format(test_run) if test_run else None,
-        "eval_policy_num": test_model if test_model is not None else None,
+        "eval_policy_dir": None,
+        "eval_policy_num": None
     }
 
     # run experiments
@@ -290,8 +294,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
     # create combination
     from itertools import combinations
 
-    pers = list(combinations(range(num_agents), 2))
-    np.random.shuffle(pers)
+    pers = [(0,1,2),(2,1,0)]
 
     mean_rewards = []
     for per in pers:
@@ -302,7 +305,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
         mean_rewards.append(mean_reward)
 
         # post process
-        envs.reset()
+        # envs.reset()
         if all_args.use_eval and eval_envs is not envs:
             eval_envs.reset()
 
@@ -312,32 +315,13 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
             runner.writter.export_scalars_to_json(str(runner.log_dir + '/summary.json'))
             runner.writter.close()
 
+    print(mean_rewards)
+    print(len(mean_rewards))
     return np.mean(np.array(mean_rewards)) * num_agents
 
 
 if __name__ == "__main__":
-    seeds = [2021, 2022, 114, 2, 2021114]
-    test_policy_list = ['population_idv_mappo_turn_update', 'population_idv_mappo', 'population_idv_mappo_total_update']
+    seeds = [2021]#, 2022, 114, 2, 2021114]
     for i in range(len(seeds)):
         print('seed = {}'.format(seeds[i]))
-        mean_rewards = []
-        for j in trange(5):
-            mean_reward = main(sys.argv[1:], seeds[i], i + 1, fix_action=j)
-            print('mean_episode_reward = {}, fix_action = {}'.format(mean_reward, j))
-            mean_rewards.append(mean_reward)
-        for test_policy in tqdm(test_policy_list):
-            for j in range(5):
-                num = 3 if test_policy == 'control_idv_mappo' else 4
-                for k in range(num):
-                    mean_reward = main(sys.argv[1:], seeds[i], i + 1, test_run=j+1, test_model=k, test_policy=test_policy)
-                    print('mean_episode_reward = {}, model = {}_run{}_{}'.format(mean_reward, test_policy, j + 1, k))
-                    mean_rewards.append(mean_reward)
-
-        seed = np.ones(len(mean_rewards)) * (i + 1)
-        if i == 0:
-            res = pd.DataFrame({'seed': seed, 'mean_episode_reward': mean_rewards})
-        else:
-            tmp = pd.DataFrame({'seed': seed, 'mean_episode_reward': mean_rewards})
-            res = res.append(tmp)
-    print(res)
-    res.to_csv('../../results/control_mappo_test_generalization_result.csv', index=False)
+        mean_reward = main(sys.argv[1:], seeds[i], i+5)
