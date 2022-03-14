@@ -24,6 +24,8 @@ class MPERunner(Runner):
             for step in range(self.episode_length):
                 # Sample actions
                 values, actions, action_log_probs, rnn_states, rnn_states_critic, actions_env = self.collect(step)
+
+                # actions_env = one hot actions representation
                     
                 # Obser reward and next obs
                 obs, rewards, dones, infos = self.envs.step(actions_env)
@@ -114,9 +116,7 @@ class MPERunner(Runner):
                 else:
                     actions_env = np.concatenate((actions_env, uc_actions_env), axis=2)
         elif self.envs.action_space[0].__class__.__name__ == 'Discrete':
-            print(actions)
             actions_env = np.squeeze(np.eye(self.envs.action_space[0].n)[actions], 2)
-            print(actions_env)
         else:
             raise NotImplementedError
 
