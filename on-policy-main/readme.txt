@@ -15,4 +15,4 @@ python test_generation_matrix_game.py --use_eval --eval_policy --experiment_name
 
 # mpe environment
 
-python train_mpe.py --share_policy True --num_agents 4 --env_name MPE --experiment_name control_idv_mappo --idv_para True --num_env_steps 4000000
+python train_mpe.py --num_agents 4 --env_name MPE --experiment_name control_idv_mappo --idv_para True --num_env_steps 4000000
