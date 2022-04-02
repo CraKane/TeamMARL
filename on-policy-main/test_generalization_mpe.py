@@ -7,6 +7,7 @@ import setproctitle
 import numpy as np
 from pathlib import Path
 import torch
+from tqdm import tqdm
 from onpolicy.config import get_config
 from onpolicy.envs.mpe.MPE_env import MPEEnv
 from onpolicy.envs.env_wrappers import SubprocVecEnv, DummyVecEnv
@@ -40,7 +41,7 @@ def make_eval_env(all_args, seed):
                 print("Can not support the " +
                       all_args.env_name + "environment.")
                 raise NotImplementedError
-            env.seed(seed * 50000 + rank * 10000)
+            env.seed(seed + rank * 10000)
             return env
         return init_env
     if all_args.n_eval_rollout_threads == 1:
@@ -51,7 +52,7 @@ def make_eval_env(all_args, seed):
 
 def parse_args(args, parser):
     parser.add_argument('--scenario_name', type=str,
-                        default='simple_spread', help="Which scenario to run on")
+                        default='navigation_control_full', help="Which scenario to run on")
     parser.add_argument("--collision_penal", type=float, default=0)
     parser.add_argument("--vision", type=float, default=1)
     parser.add_argument("--num_landmarks", type=int, default=3)
@@ -63,7 +64,7 @@ def parse_args(args, parser):
     return all_args
 
 
-def main(args, seed):
+def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_policy=None):
     parser = get_config()
     all_args = parse_args(args, parser)
 
@@ -90,11 +91,9 @@ def main(args, seed):
         device = torch.device("cpu")
         torch.set_num_threads(all_args.n_training_threads)
 
-    # run dir
-    run_dir = Path(os.path.split(os.path.dirname(os.path.abspath(__file__)))[
-                   0] + "/results") / all_args.env_name / all_args.scenario_name / all_args.algorithm_name / all_args.experiment_name
-    if not run_dir.exists():
-        os.makedirs(str(run_dir))
+    run_dir = '../../results/control_idv_mappo/'
+    run_dir = run_dir + 'run{}'.format(i)
+    run_dir = Path(run_dir)
 
     # wandb
     if all_args.use_wandb:
@@ -109,18 +108,6 @@ def main(args, seed):
                          dir=str(run_dir),
                          job_type="training",
                          reinit=True)
-    else:
-        if not run_dir.exists():
-            curr_run = 'run1'
-        else:
-            exst_run_nums = [int(str(folder.name).split('run')[1]) for folder in run_dir.iterdir() if str(folder.name).startswith('run')]
-            if len(exst_run_nums) == 0:
-                curr_run = 'run1'
-            else:
-                curr_run = 'run%i' % (max(exst_run_nums) + 1)
-        run_dir = run_dir / curr_run
-        if not run_dir.exists():
-            os.makedirs(str(run_dir))
 
     setproctitle.setproctitle(str(all_args.algorithm_name) + "-" + \
         str(all_args.env_name) + "-" + str(all_args.experiment_name) + "@" + str(all_args.user_name))
@@ -142,17 +129,18 @@ def main(args, seed):
         "num_agents": num_agents,
         "device": device,
         "run_dir": run_dir,
-        "eval_policy_dir": None
+        "eval_policy_dir": '../../results/' + test_policy + '/run{}/models'.format(test_run) if test_run else None,
+        "eval_policy_num": test_model if test_model is not None else None,
     }
 
     # run experiments
     if all_args.share_policy:
-        from onpolicy.runner.shared.mpe_runner import MPERunner as Runner
+        from onpolicy.runner.shared.test_mpe_runner import MPERunner as Runner
     else:
         from onpolicy.runner.separated.mpe_runner import MPERunner as Runner
 
     runner = Runner(config)
-    runner.run()
+    mean_reward = runner.run(test_policy, test_run)
     
     # post process
     envs.close()
@@ -165,8 +153,26 @@ def main(args, seed):
         runner.writter.export_scalars_to_json(str(runner.log_dir + '/summary.json'))
         runner.writter.close()
 
+    return mean_reward
+
+
 
 if __name__ == "__main__":
-    seeds = [2021, 2022, 114, 2, 2021114]
+    seeds = [2021]#, 2022, 114]#, 2, 2021114]
+    test_policy_list = ['population_idv_mappo_turn_update', 'population_idv_mappo', 'population_idv_mappo_total_update']
+    mean_rewards = []
     for i in range(len(seeds)):
-        main(sys.argv[1:], seeds[i])
+        for test_policy in tqdm(test_policy_list):
+            for j in range(1):
+                num = 4 if test_policy == 'control_idv_mappo' else 6
+                from itertools import combinations
+                pers = list(combinations(range(num), 2))   # for my policy
+                np.random.shuffle(pers)
+                for k in pers:
+                    mean_reward = main(sys.argv[1:], seeds[i], i + 1, test_run=j+1, test_model=k, test_policy=test_policy)
+                    print('mean_episode_reward = {}, model = {}_run{}_{}'.format(mean_reward, test_policy, j + 1, k))
+                    mean_rewards.append(mean_reward)
+
+    av_reward = np.mean(mean_rewards)
+
+    print(av_reward)

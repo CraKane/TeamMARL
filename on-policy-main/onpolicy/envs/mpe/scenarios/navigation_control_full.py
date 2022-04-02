@@ -125,7 +125,7 @@ class Scenario(BaseScenario):
         entity_pos = []
         for entity in world.landmarks:  # world.entities:
             # if self.is_obs(agent,entity):
-            entity_pos.append(entity.state.p_pos - agent.state.p_pos)
+            entity_pos.append(entity.state.p_pos)
             # else:
             #     entity_pos.append(np.zeros_like(entity.state.p_pos - agent.state.p_pos))
         # entity colors
@@ -139,7 +139,7 @@ class Scenario(BaseScenario):
             if other is agent: continue
             comm.append(other.state.c)
             # if self.is_obs(agent,other):
-            other_pos.append(other.state.p_pos - agent.state.p_pos)
+            other_pos.append(other.state.p_pos)
             # else:
             #     other_pos.append(np.zeros_like(other.state.p_pos - agent.state.p_pos))
         return np.concatenate([agent.state.p_vel] + [agent.state.p_pos] + entity_pos + other_pos + comm)

@@ -51,7 +51,7 @@ def make_eval_env(all_args, seed):
 
 def parse_args(args, parser):
     parser.add_argument('--scenario_name', type=str,
-                        default='simple_spread', help="Which scenario to run on")
+                        default='navigation_control_full', help="Which scenario to run on")
     parser.add_argument("--collision_penal", type=float, default=0)
     parser.add_argument("--vision", type=float, default=1)
     parser.add_argument("--num_landmarks", type=int, default=3)
@@ -167,6 +167,6 @@ def main(args, seed):
 
 
 if __name__ == "__main__":
-    seeds = [2021, 2022, 114, 2, 2021114]
+    seeds = [2022, 114, 2]
     for i in range(len(seeds)):
         main(sys.argv[1:], seeds[i])

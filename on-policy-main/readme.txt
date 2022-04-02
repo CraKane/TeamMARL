@@ -15,4 +15,15 @@ python test_generation_matrix_game.py --use_eval --eval_policy --experiment_name
 
 # mpe environment
 
-python train_mpe.py --num_agents 4 --env_name MPE --experiment_name control_idv_mappo --idv_para True --num_env_steps 4000000
+python train_mpe.py --num_agents 4 --env_name MPE --experiment_name control_idv_mappo --idv_para True --num_env_steps 6000000
+
+# simple spread
+
+python train_mpe.py --num_agents 4 --env_name MPE --experiment_name control_idv_mappo --idv_para True --num_env_steps 6000000 --scenario_name simple_spread
+
+
+3-1
+python test_generalization_mpe.py --num_agents 4 --env_name MPE --use_eval --experiment_name control_idv_mappo --idv_para True --num_env_steps 200
+
+2-2
+python test_generalization_mpe.py --num_agents 4 --env_name MPE --use_eval --experiment_name control_idv_mappo --idv_para True --num_env_steps 200 --my_policy 2
