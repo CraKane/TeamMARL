@@ -14,11 +14,11 @@ def build(run_dir, num_agents, args, obs_space, sobs_space, act_space, device):
 
     share_obs_space = sobs_space if args.use_centralized_V else obs_space
 
-    policy_actor = [R_Actor(args, obs_space, act_space, device) for _ in range(num_agents+1)]
-    policy_critic = [R_Critic(args, share_obs_space, device) for _ in range(num_agents+1)]
+    policy_actor = [R_Actor(args, obs_space, act_space, device) for _ in range(num_agents)]
+    policy_critic = [R_Critic(args, share_obs_space, device) for _ in range(num_agents)]
 
     if idv_para:
-        for i in range(num_agents+1):
+        for i in range(num_agents):
             torch.save(policy_actor[i].state_dict(), str(model_dir) + "/actor_{}.pt".format(i))
             torch.save(policy_critic[i].state_dict(), str(model_dir) + "/critic_{}.pt".format(i))
 

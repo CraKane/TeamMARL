@@ -26,7 +26,12 @@ class Runner(object):
         if config.__contains__("render_envs"):
             self.render_envs = config['render_envs']  
 
-        self.pers = list(combinations(range(self.num_agents+1), 3))     
+        if self.all_args.env_name == "MPE":
+            pool = self.num_agents + 2
+        else:
+            pool = self.num_agents + 1
+
+        self.pers = list(combinations(range(pool), self.num_agents))     
 
         # parameters
         self.env_name = self.all_args.env_name
@@ -53,7 +58,7 @@ class Runner(object):
         self.eval_interval = self.all_args.eval_interval
         self.log_interval = self.all_args.log_interval
 
-        if self.use_eval:
+        if self.use_eval and self.all_args.env_name != "MPE":
             self.agent_ids = config['agent_ids']
 
         if self.use_wandb:
@@ -161,7 +166,7 @@ class Runner(object):
     def restore(self, eval = False, team=(0, 1, 2)):
         """Restore policy's networks from a saved model."""
         # np.random.shuffle(self.pers)
-        if not self.use_eval:
+        if self.check_eval:
             self.agent_ids = self.pers[np.random.randint(4)]
         if self.all_args.idv_para:
             if eval:
@@ -173,21 +178,24 @@ class Runner(object):
                             str(self.model_dir) + "/critic_{}.pt".format(team[i]))
                         self.evl_policy.critic[i].load_state_dict(policy_critic_state_dict)
             else:
-                num = self.num_agents-1 if self.use_eval else self.num_agents
+                num = self.all_args.my_policy if self.use_eval else self.num_agents
                 for i in range(num):
-                    print("my policy, " + str(self.model_dir) + "/actor_{}.pt".format(self.agent_ids[i]))
+                    # print("my policy, " + str(self.model_dir) + "/actor_{}.pt".format(self.agent_ids[i]))
                     policy_actor_state_dict = torch.load(str(self.model_dir) + "/actor_{}.pt".format(self.agent_ids[i]))
+                    # print(policy_actor_state_dict)
                     self.policy.actor[i].load_state_dict(policy_actor_state_dict)
                     if not self.all_args.use_render:
                         policy_critic_state_dict = torch.load(str(self.model_dir) + "/critic_{}.pt".format(self.agent_ids[i]))
                         self.policy.critic[i].load_state_dict(policy_critic_state_dict)
                 if self.eval_dir is not None:
-                    print("other policy, " + self.eval_dir + "/actor_{}.pt".format(self.eval_num))
-                    policy_actor_state_dict = torch.load(self.eval_dir + "/actor_{}.pt".format(self.eval_num))
-                    self.policy.actor[2].load_state_dict(policy_actor_state_dict)
-                    if not self.all_args.use_render:
-                        policy_critic_state_dict = torch.load(self.eval_dir + "/critic_{}.pt".format(self.eval_num))
-                        self.policy.critic[2].load_state_dict(policy_critic_state_dict)
+                    rest_num = self.num_agents-self.all_args.my_policy
+                    for i in range(rest_num):
+                        print("other policy, " + self.eval_dir + "/actor_{}.pt".format(self.eval_num[i]))
+                        policy_actor_state_dict = torch.load(self.eval_dir + "/actor_{}.pt".format(self.eval_num[i]))
+                        self.policy.actor[self.agent_ids[i+num]].load_state_dict(policy_actor_state_dict)
+                        policy_critic_state_dict = torch.load(self.eval_dir + "/critic_{}.pt".format(self.eval_num[i]))
+                        if not self.all_args.use_render:
+                            self.policy.critic[self.agent_ids[i+num]].load_state_dict(policy_critic_state_dict)
                 
         else:
             policy_actor_state_dict = torch.load(str(self.model_dir) + '/actor.pt')

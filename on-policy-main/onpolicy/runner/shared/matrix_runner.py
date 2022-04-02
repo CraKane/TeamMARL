@@ -51,7 +51,7 @@ class MatrixRunner(Runner):
             # post process
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
             # save model
-            if (episode % 4 == 0 or episode == episodes - 1):
+            if (episode % len(self.pers) == 0 or episode == episodes - 1):
                 self.save()
 
             # log information

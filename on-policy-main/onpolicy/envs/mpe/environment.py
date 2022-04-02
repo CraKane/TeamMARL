@@ -257,7 +257,8 @@ class MultiAgentEnv(gym.Env):
         self.render_geoms = None
         self.render_geoms_xform = None
 
-    def render(self, mode='human', close=True):
+    def render(self, mode='rgb_array', close=False):
+        # print("asdasd")
         if close:
             # close any existic renderers
             for i, viewer in enumerate(self.viewers):
@@ -283,13 +284,14 @@ class MultiAgentEnv(gym.Env):
             print(message)
 
         for i in range(len(self.viewers)):
-            # create viewers (if necessary)
 
+            # create viewers (if necessary)
+            # print("asdqweqwe")W
             if self.viewers[i] is None:
                 # import rendering only if we need it (and don't import for headless machines)
                 #from gym.envs.classic_control import rendering
                 from . import rendering
-                self.viewers[i] = rendering.Viewer(700, 700)
+                self.viewers[i] = rendering.Viewer(1000, 1000)
 
         # create rendering geometry
         if self.render_geoms is None:
@@ -385,10 +387,13 @@ class MultiAgentEnv(gym.Env):
                 pos[0]-cam_range, pos[0]+cam_range, pos[1]-cam_range, pos[1]+cam_range)
             # update geometry positions
             for e, entity in enumerate(self.world.entities):
-                self.render_geoms_xform[e].set_translation(*entity.state.p_pos)
+                # print(e, entity.name)
+                # print(self.render_geoms_xform)
+                self.render_geoms_xform[e].set_translation(*entity.state.p_pos) # render_geoms_xform[e]
                 if 'agent' in entity.name:
+                    # print(entity.color)
                     self.render_geoms[e].set_color(*entity.color, alpha=0.5)
-
+                    # print(entity.silent)
                     if not entity.silent:
                         for ci in range(self.world.dim_c):
                             color = 1 - entity.state.c[ci]
@@ -396,6 +401,8 @@ class MultiAgentEnv(gym.Env):
                                 color, color, color)
                 else:
                     self.render_geoms[e].set_color(*entity.color)
+                    # print(entity.color)
+                    # print(entity.channel)
                     if entity.channel is not None:
                         for ci in range(self.world.dim_c):
                             color = 1 - entity.channel[ci]

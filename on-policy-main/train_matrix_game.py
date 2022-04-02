@@ -276,7 +276,7 @@ def main(args, seed):
     from build_population import build as Create
 
     Create(run_dir=run_dir,
-        num_agents=num_agents,
+        num_agents=num_agents+1,
         args=all_args,
         obs_space=envs.observation_space[0], 
         sobs_space=envs.share_observation_space[0], 
