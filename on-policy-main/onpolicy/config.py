@@ -299,5 +299,7 @@ def get_config():
     # evaluation policy model
     parser.add_argument("--eval_policy_dir", type=str, default=None, help="by default None. set the path to evaluation policy model.")
     parser.add_argument("--eval_policy_num", type=int, default=0, help="by default 0. set the number to load the corresponding agent model.")
+    parser.add_argument("--my_policy", type=int, default=3, help="by default 3. set the number to load the current method model to test the generalization.")
+
 
     return parser

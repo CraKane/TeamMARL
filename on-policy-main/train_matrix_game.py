@@ -268,14 +268,14 @@ def main(args, seed):
         "eval_envs": eval_envs,
         "num_agents": num_agents,
         "device": device,
-        "run_dir": run_dir
+        "run_dir": run_dir,
     }
 
     # build populations
     from build_population import build as Create
 
     Create(run_dir= run_dir,
-        num_agents=num_agents,
+        num_agents=num_agents+1,
         args=all_args,
         obs_space=envs.observation_space[0], 
         sobs_space=envs.share_observation_space[0], 

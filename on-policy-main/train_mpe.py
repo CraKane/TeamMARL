@@ -13,7 +13,7 @@ from onpolicy.envs.env_wrappers import SubprocVecEnv, DummyVecEnv
 
 """Train script for MPEs."""
 
-def make_train_env(all_args):
+def make_train_env(all_args, seed):
     def get_env_fn(rank):
         def init_env():
             if all_args.env_name == "MPE":
@@ -22,7 +22,7 @@ def make_train_env(all_args):
                 print("Can not support the " +
                       all_args.env_name + "environment.")
                 raise NotImplementedError
-            env.seed(all_args.seed + rank * 1000)
+            env.seed(seed + rank * 1000)
             return env
         return init_env
     if all_args.n_rollout_threads == 1:
@@ -31,7 +31,7 @@ def make_train_env(all_args):
         return SubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 
-def make_eval_env(all_args):
+def make_eval_env(all_args, seed):
     def get_env_fn(rank):
         def init_env():
             if all_args.env_name == "MPE":
@@ -40,7 +40,7 @@ def make_eval_env(all_args):
                 print("Can not support the " +
                       all_args.env_name + "environment.")
                 raise NotImplementedError
-            env.seed(all_args.seed * 50000 + rank * 10000)
+            env.seed(seed + rank * 10000)
             return env
         return init_env
     if all_args.n_eval_rollout_threads == 1:
@@ -51,7 +51,7 @@ def make_eval_env(all_args):
 
 def parse_args(args, parser):
     parser.add_argument('--scenario_name', type=str,
-                        default='simple_spread', help="Which scenario to run on")
+                        default='navigation_control_full', help="Which scenario to run on")
     parser.add_argument("--collision_penal", type=float, default=0)
     parser.add_argument("--vision", type=float, default=1)
     parser.add_argument("--num_landmarks", type=int, default=3)
@@ -62,8 +62,7 @@ def parse_args(args, parser):
 
     return all_args
 
-
-def main(args):
+def main(args, seed):
     parser = get_config()
     all_args = parse_args(args, parser)
 
@@ -126,13 +125,13 @@ def main(args):
         str(all_args.env_name) + "-" + str(all_args.experiment_name) + "@" + str(all_args.user_name))
 
     # seed
-    torch.manual_seed(all_args.seed)
-    torch.cuda.manual_seed_all(all_args.seed)
-    np.random.seed(all_args.seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
 
     # env init
-    envs = make_train_env(all_args)
-    eval_envs = make_eval_env(all_args) if all_args.use_eval else None
+    envs = make_train_env(all_args, seed)
+    eval_envs = make_eval_env(all_args, seed) if all_args.check_eval else None
     num_agents = all_args.num_agents
     all_args.n_agents = all_args.num_agents
     config = {
@@ -144,6 +143,17 @@ def main(args):
         "run_dir": run_dir
     }
 
+     # build populations
+    from build_population import build as Create
+
+    Create(run_dir= run_dir,
+        num_agents=num_agents+2,
+        args=all_args,
+        obs_space=envs.observation_space[0], 
+        sobs_space=envs.share_observation_space[0], 
+        act_space=envs.action_space[0],
+        device=device)
+
     # run experiments
     if all_args.share_policy:
         from onpolicy.runner.shared.mpe_runner import MPERunner as Runner
@@ -152,7 +162,7 @@ def main(args):
 
     runner = Runner(config)
     runner.run()
-    
+
     # post process
     envs.close()
     if all_args.use_eval and eval_envs is not envs:
@@ -166,4 +176,6 @@ def main(args):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    seeds = [2022, 114, 2]
+    for i in range(len(seeds)):
+        main(sys.argv[1:], seeds[i])
