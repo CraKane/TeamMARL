@@ -44,6 +44,9 @@ def update_linear_schedule(optimizer, epoch, total_num_epochs, initial_lr):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
+
+# It is robust for special points. 
+# Decreasing the punishment of special points
 def huber_loss(e, d):
     a = (abs(e) <= d).float()
     b = (e > d).float()
@@ -97,3 +100,8 @@ def tile_images(img_nhwc):
     img_HhWwc = img_HWhwc.transpose(0, 2, 1, 3, 4)
     img_Hh_Ww_c = img_HhWwc.reshape(H*h, W*w, c)
     return img_Hh_Ww_c
+
+
+
+def js_divergence(p, q):
+    pass

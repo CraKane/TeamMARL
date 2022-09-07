@@ -1,10 +1,12 @@
 import torch
-from onpolicy.algorithms.r_mappo.algorithm.r_actor_critic import R_Actor, R_Critic
+from onpolicy.algorithms.r_mappo.algorithm.r_actor_critic import R_Actor, R_Critic, Coach_Actor, Coach_Critic
 from onpolicy.utils.util import update_linear_schedule,soft_update,hard_update
 import numpy as np
 
+
 def _t2n(x):
     return x.detach().cpu().numpy()
+
 def idv_merge(x):
     if len(x[0].shape) == 0:
         return torch.tensor(x).to(x[0].device)
@@ -36,11 +38,25 @@ class R_MAPPOPolicy:
         self.obs_space = obs_space
         self.share_obs_space = cent_obs_space
         self.act_space = act_space
+
+        # coach
+        self.coach_actor = Coach_Actor(args, self.obs_space, self.device)
+        self.coach_critic = Coach_Critic(args, self.obs_space, self.device)
+
+        self.coach_actor_optimizer = torch.optim.Adam(self.coach_actor.parameters(),
+                                                lr=self.lr, eps=self.opti_eps,
+                                                weight_decay=self.weight_decay)
+        # print(self.coach_actor.state_dict())
+        # for name, child in self.coach_actor.named_modules():
+        #     print('模块的名字是:', name, '###模块本身是:', child)
+        self.coach_critic_optimizer = torch.optim.Adam(self.coach_critic.parameters(),
+                                                 lr=self.critic_lr,
+                                                 eps=self.opti_eps,
+                                                 weight_decay=self.weight_decay)
+
         if self.args.idv_para:
             self.actor = [R_Actor(args, self.obs_space, self.act_space, self.device) for _ in range(self.args.num_agents)]
             self.critic = [R_Critic(args, self.share_obs_space, self.device) for _ in range(self.args.num_agents)]
-
-
 
             self.actor_optimizer = [torch.optim.Adam(self.actor[i].parameters(),
                                                     lr=self.lr, eps=self.opti_eps,
@@ -51,8 +67,13 @@ class R_MAPPOPolicy:
                                                      eps=self.opti_eps,
                                                      weight_decay=self.weight_decay) for i in range(self.args.num_agents)]
 
+            self.role_optimizer = [torch.optim.Adam(self.actor[i].role_out.parameters(),
+                                                    lr=self.lr, eps=self.opti_eps,
+                                                    weight_decay=self.weight_decay) for i in range(self.args.num_agents)]
+
             if self.args.target_dec:
                 self.target_actor = [R_Actor(args, self.obs_space, self.act_space, self.device) for _ in range(self.args.num_agents)]
+                self.coach_target_actor = Coach_Actor(args, self.obs_space, self.act_space, self.device)
                 self.hard_update_policy()
         else:
             self.actor = R_Actor(args, self.obs_space, self.act_space, self.device)
@@ -65,9 +86,15 @@ class R_MAPPOPolicy:
                                                      lr=self.critic_lr,
                                                      eps=self.opti_eps,
                                                      weight_decay=self.weight_decay)
+            self.role_optimizer = torch.optim.Adam(self.actor.role_out.parameters(),
+                                                    lr=self.lr, eps=self.opti_eps,
+                                                    weight_decay=self.weight_decay)
+
             if self.args.target_dec:
                 self.target_actor = R_Actor(args, self.obs_space, self.act_space, self.device)
+                self.coach_target_actor = Coach_Actor(args, self.obs_space, self.act_space, self.device)
                 self.hard_update_policy()
+
 
     def soft_update_policy(self,tau = 0.001):
         if self.args.idv_para:
@@ -76,12 +103,19 @@ class R_MAPPOPolicy:
         else:
             soft_update(self.target_actor,self.actor,tau)
 
+        # coach
+        soft_update(self.coach_target_actor,self.coach_actor,tau)
+
     def hard_update_policy(self):
         if self.args.idv_para:
             for i in range(self.args.num_agents):
                 hard_update(self.target_actor[i], self.actor[i])
         else:
             hard_update(self.target_actor,self.actor)
+
+        # coach
+        hard_update(self.coach_target_actor,self.coach_actor)
+
     def optim_reset(self,agent_id):
         if self.args.idv_para:
             self.actor_optimizer[agent_id] = torch.optim.Adam(self.actor[agent_id].parameters(),
@@ -107,13 +141,20 @@ class R_MAPPOPolicy:
             update_linear_schedule(self.actor_optimizer, episode, episodes, self.lr)
             update_linear_schedule(self.critic_optimizer, episode, episodes, self.critic_lr)
 
+        # coach
+        update_linear_schedule(self.coach_actor_optimizer, episode, episodes, self.lr)
+        update_linear_schedule(self.coach_critic_optimizer, episode, episodes, self.critic_lr)
+
     def idv_reshape(self,x):
         # print('type = {} is_tensor = {}'.format(type(x),torch.is_tensor(x)))
         if torch.is_tensor(x):
             x = _t2n(x)
         return np.array(np.reshape(x, [-1, self.args.num_agents, *np.shape(x)[1:]]))
-    def get_actions(self, cent_obs, obs, rnn_states_actor, rnn_states_critic, masks, available_actions=None,
-                    deterministic=False, fix_action=-1):
+
+    def get_actions(self, cent_obs, obs, rnn_states_actor, rnn_states_critic, 
+                    coach_rnn_states_actor, coach_rnn_states_critic, coach_rnn_states_obs,
+                    masks, available_actions=None,
+                    deterministic=False, fix_action=None):
         """
         Compute actions and value function predictions for the given inputs.
         :param cent_obs (np.ndarray): centralized input to the critic.
@@ -133,12 +174,12 @@ class R_MAPPOPolicy:
         """
         if self.args.idv_para:
 
-
             obs = self.idv_reshape(obs)
             cent_obs = self.idv_reshape(cent_obs)
-            rnn_states_critic = self.idv_reshape(rnn_states_critic)
 
+            rnn_states_critic = self.idv_reshape(rnn_states_critic)
             rnn_states_actor = self.idv_reshape(rnn_states_actor)
+            coach_rnn_states_obs = self.idv_reshape(coach_rnn_states_obs)
 
             masks = self.idv_reshape(masks)
             # print('available_actions_prev = {}'.format(available_actions.shape))
@@ -146,6 +187,23 @@ class R_MAPPOPolicy:
                 available_actions = self.idv_reshape(available_actions)
             # print('available_actions_after = {}'.format(available_actions.shape))
             actions,action_log_probs,rnn_states_actor_list,values,rnn_states_critic_list = [],[],[],[],[]
+
+            # print(obs.shape, cent_obs.shape, rnn_states_actor.shape, rnn_states_critic.shape, coach_rnn_states_actor.shape, coach_rnn_states_critic.shape, masks.shape)
+
+            ## coach action
+            if self.args.target_dec:
+                coach_actions, coach_action_log_probs, coach_rnn_states_actor, coach_rnn_states_obs = self.coach_target_actor(obs,
+                                                                         coach_rnn_states_actor, coach_rnn_states_obs)
+            else:
+                coach_actions, coach_action_log_probs, coach_rnn_states_actor, coach_rnn_states_obs = self.coach_actor(obs,
+                                                                         coach_rnn_states_actor, coach_rnn_states_obs)
+
+            coach_values, coach_rnn_states_critic = self.coach_critic(obs, coach_rnn_states_critic)
+            coach_actions = self.idv_reshape(coach_actions)
+            # print(coach_actions.shape)
+            ## coach action end
+
+
             for i in range(self.args.num_agents):
                 if available_actions is not None:
                     avail_input_i = available_actions[:, i, :]
@@ -154,18 +212,20 @@ class R_MAPPOPolicy:
                 if self.args.target_dec:
                     idv_actions, idv_action_log_probs, idv_rnn_states_actor = self.target_actor[i](obs[:,i,:],
                                                                                     rnn_states_actor[:,i,:],
+                                                                                    coach_actions[:,i,:],
                                                                                     masks[:,i,:],
                                                                                     avail_input_i,
                                                                                     deterministic)
                 else:
                     idv_actions, idv_action_log_probs, idv_rnn_states_actor = self.actor[i](obs[:, i, :],
-                                                                                                   rnn_states_actor[:,
-                                                                                                   i, :],
-                                                                                                   masks[:, i, :],
-                                                                                                   avail_input_i,
-                                                                                                   deterministic)
+                                                                                            rnn_states_actor[:,i, :],
+                                                                                            coach_actions[:,i,:],
+                                                                                            masks[:, i, :],
+                                                                                            avail_input_i,
+                                                                                            deterministic)
+                # print(cent_obs, self.critic[i].state_dict())
                 idv_values, idv_rnn_states_critic = self.critic[i](cent_obs[:, i, :], rnn_states_critic[:, i, :], masks[:, i, :])
-                if self.args.use_eval and i == self.args.num_agents - 1 and fix_action:
+                if self.args.use_eval and i == self.args.num_agents - 1 and fix_action != None:
                     actions.append(torch.tensor([[fix_action]]).to('cuda:0'))
                 else:
                     actions.append(idv_actions)
@@ -180,24 +240,46 @@ class R_MAPPOPolicy:
             rnn_states_actor = idv_merge(rnn_states_actor_list)
             rnn_states_critic = idv_merge(rnn_states_critic_list)
             values = idv_merge(values)
+            # print(actions.shape, action_log_probs.shape, rnn_states_actor.shape, rnn_states_critic.shape, values.shape)
         else:
+
+            ## coach action
+            if self.args.target_dec:
+                coach_actions, coach_action_log_probs, coach_rnn_states_actor, coach_rnn_states_obs = self.coach_target_actor(obs,
+                                                                         coach_rnn_states_actor, coach_rnn_states_obs)
+            else:
+                coach_actions, coach_action_log_probs, coach_rnn_states_actor, coach_rnn_states_obs = self.coach_actor(obs,
+                                                                         coach_rnn_states_actor, coach_rnn_states_obs)
+
+            coach_values, coach_rnn_states_critic = self.coach_critic(obs, coach_rnn_states_critic)
+            coach_actions = self.idv_reshape(coach_actions)
+            # print(coach_actions.shape)
+            ## coach action end
+
             if self.args.target_dec:
                 actions, action_log_probs, rnn_states_actor = self.target_actor(obs,
                                                                          rnn_states_actor,
+                                                                         coach_actions,
                                                                          masks,
                                                                          available_actions,
                                                                          deterministic)
             else:
                 actions, action_log_probs, rnn_states_actor = self.actor(obs,
                                                                          rnn_states_actor,
+                                                                         coach_actions,
                                                                          masks,
                                                                          available_actions,
                                                                          deterministic)
 
             values, rnn_states_critic = self.critic(cent_obs, rnn_states_critic, masks)
-        return values, actions, action_log_probs, rnn_states_actor, rnn_states_critic
 
-    def get_values(self, cent_obs, rnn_states_critic, masks):
+        
+
+        return values, actions, action_log_probs, rnn_states_actor, rnn_states_critic,\
+        coach_values, coach_actions, coach_action_log_probs, coach_rnn_states_actor, \
+        coach_rnn_states_critic, coach_rnn_states_obs
+
+    def get_values(self, cent_obs, obs, rnn_states_critic, coach_rnn_states_critic, masks):
         """
         Get value function predictions.
         :param cent_obs (np.ndarray): centralized input to the critic.
@@ -206,6 +288,10 @@ class R_MAPPOPolicy:
 
         :return values: (torch.Tensor) value function predictions.
         """
+        obs = self.idv_reshape(obs)
+        coach_values, _ = self.coach_critic(obs, coach_rnn_states_critic)
+        # print(coach_values.shape)
+
         if self.args.idv_para:
 
             cent_obs = self.idv_reshape(cent_obs)
@@ -227,10 +313,12 @@ class R_MAPPOPolicy:
             values = idv_merge(values)
         else:
             values, _ = self.critic(cent_obs, rnn_states_critic, masks)
-        return values
+        # print(values.shape)
+        return values, coach_values
 
-    def evaluate_actions(self, cent_obs, obs, rnn_states_actor, rnn_states_critic, action, masks,
-                         available_actions=None, active_masks=None):
+    def evaluate_actions(self, cent_obs, obs, rnn_states_actor, rnn_states_critic, 
+                    action, masks, coach_rnn_states_actor, coach_rnn_states_critic,
+                    coach_rnn_states_obs, coach_actions, available_actions=None, active_masks=None):
         """
         Get action logprobs / entropy and value function predictions for actor update.
         :param cent_obs (np.ndarray): centralized input to the critic.
@@ -256,6 +344,7 @@ class R_MAPPOPolicy:
             rnn_states_critic = self.idv_reshape(rnn_states_critic)
 
             rnn_states_actor = self.idv_reshape(rnn_states_actor)
+            coach_rnn_states_obs = self.idv_reshape(coach_rnn_states_obs)
 
             masks = self.idv_reshape(masks)
             # print('avail_act_prev = {}'.format(available_actions.shape))
@@ -264,6 +353,14 @@ class R_MAPPOPolicy:
             # print('avail_act_after = {}'.format(available_actions.shape))
             if  active_masks is not None:
                 active_masks =  self.idv_reshape(active_masks)
+
+
+            ## coach action
+            coach_action_log_probs, coach_dist_entropy = self.coach_actor.evaluate_actions(obs,
+                                                                         coach_rnn_states_actor,
+                                                                         coach_rnn_states_obs,
+                                                                         coach_actions)
+            coach_dist_entropy = coach_dist_entropy.mean()
 
 
             action_log_probs,dist_entropy, values = [], [], []
@@ -281,6 +378,7 @@ class R_MAPPOPolicy:
                 idv_action_log_probs, idv_dist_entropy = self.actor[i].evaluate_actions(obs[:, i, :],
                                                                                         rnn_states_actor[:,
                                                                                         i, :],
+                                                                                        coach_actions[:,i,:],
                                                                                         action[:,i,:],
                                                                                         masks[:, i, :],
                                                                                         avail_input_i,
@@ -299,20 +397,41 @@ class R_MAPPOPolicy:
             values = idv_merge(values )
             dist_entropy = idv_merge(dist_entropy)
             dist_entropy = dist_entropy.mean()
+            # print(dist_entropy.shape, action_log_probs.shape, coach_dist_entropy.shape, coach_action_log_probs.shape)
         else:
+            ## coach action
+            coach_action_log_probs, coach_dist_entropy = self.coach_actor.evaluate_actions(obs,
+                                                                         coach_rnn_states_actor,
+                                                                         coach_actions)
+            coach_dist_entropy = coach_dist_entropy.mean()
+
             action_log_probs, dist_entropy = self.actor.evaluate_actions(obs,
                                                                          rnn_states_actor,
+                                                                         coach_actions,
                                                                          action,
                                                                          masks,
                                                                          available_actions,
                                                                          active_masks)
 
             values, _ = self.critic(cent_obs, rnn_states_critic, masks)
+
+        coach_values, _ = self.coach_critic(obs, coach_rnn_states_critic)
         # print('dist_entropy = {}'.format(dist_entropy))
-        return values, action_log_probs, dist_entropy
+        return values, action_log_probs, dist_entropy, coach_values, coach_action_log_probs, coach_dist_entropy
 
     def evaluate_actions_single(self, cent_obs, obs, rnn_states_actor, rnn_states_critic, action, masks,
+                        coach_rnn_states_actor, coach_rnn_states_critic, coach_rnn_states_obs, coach_actions, 
                          available_actions=None, active_masks=None,update_index = -1):
+
+        ## coach action
+        coach_action_log_probs, coach_dist_entropy = self.coach_actor.evaluate_actions(obs,
+                                                                         coach_rnn_states_actor,
+                                                                         coach_rnn_states_obs,
+                                                                         coach_actions)
+
+        coach_values, coach_rnn_states_critic = self.coach_critic(obs, coach_rnn_states_critic)
+        coach_actions = self.idv_reshape(coach_actions)
+
         action_log_probs, dist_entropy = self.actor[update_index].evaluate_actions(obs,
                                                                      rnn_states_actor,
                                                                      action,
@@ -321,8 +440,10 @@ class R_MAPPOPolicy:
                                                                      active_masks)
 
         values, _ = self.critic[update_index](cent_obs, rnn_states_critic, masks)
-        return values, action_log_probs, dist_entropy
-    def act(self, obs, rnn_states_actor, masks, available_actions=None, deterministic=False, fix_action=-1):
+        coach_values, _ = self.coach_critic(obs, coach_rnn_states_critic)
+        return values, action_log_probs, dist_entropy, coach_values, coach_action_log_probs, coach_dist_entropy
+
+    def act(self, obs, rnn_states_actor, masks, available_actions=None, deterministic=False, fix_action=None):
         """
         Compute actions using the given inputs.
         :param obs (np.ndarray): local agent inputs to the actor.
@@ -340,6 +461,7 @@ class R_MAPPOPolicy:
             obs = self.idv_reshape(obs)
 
             rnn_states_actor = self.idv_reshape(rnn_states_actor)
+            # print(rnn_states_actor.shape)
             masks = self.idv_reshape(masks)
 
             if available_actions is not None:
@@ -350,11 +472,11 @@ class R_MAPPOPolicy:
                     avail_input_i = available_actions[:, i, :]
                 else:
                     avail_input_i = None
-                idv_actions, _, idv_rnn_states_actor = self.actor[i](obs[:, i, :],rnn_states_actor[:,i, :],\
+                idv_actions, _, idv_rnn_states_actor = self.actor[i].idv_act(obs[:, i, :],rnn_states_actor[:,i, :],\
                                                                                         masks[:, i, :],\
                                                                                         avail_input_i,\
                                                                                         deterministic)
-                if self.args.use_eval and i == self.args.num_agents - 1 and fix_action:
+                if self.args.use_eval and i == self.args.num_agents - 1 and fix_action != None:
                     actions.append(torch.tensor([[fix_action]]).to('cuda:0'))
                 else:
                     actions.append(idv_actions)
@@ -364,5 +486,29 @@ class R_MAPPOPolicy:
             actions = idv_merge(actions)
             rnn_states_actor = idv_merge(rnn_states_actor_list)
         else:
-            actions, _, rnn_states_actor = self.actor(obs, rnn_states_actor, masks, available_actions, deterministic)
+            actions, _, rnn_states_actor = self.actor.idv_act(obs, rnn_states_actor, masks, available_actions, deterministic)
         return actions, rnn_states_actor
+
+
+    def output_gaussian_for_update(self, obs, rnn_states_actor, coach_rnn_states_actor, coach_rnn_states_obs, masks):
+        if self.args.idv_para:
+
+            obs = self.idv_reshape(obs)
+
+            rnn_states_actor = self.idv_reshape(rnn_states_actor)
+            coach_rnn_states_obs = self.idv_reshape(coach_rnn_states_obs)
+            masks = self.idv_reshape(masks)
+
+            gaussian_embeds = []
+            for i in range(self.args.num_agents):
+                gaussian_embed = self.actor[i].output_gaussian_for_update(obs[:, i, :],rnn_states_actor[:,i, :],\
+                                                                                        masks[:, i, :])
+                gaussian_embeds.append(gaussian_embed)
+
+        else:
+            gaussian_embeds = self.actor.output_gaussian_for_update(obs[:, i, :],rnn_states_actor[:,i, :],\
+                                                                                        masks[:, i, :])
+
+        ### coach gaussian
+        gaussian_infers = self.coach_actor.output_gaussian_for_update(obs,coach_rnn_states_actor, coach_rnn_states_obs)
+        return gaussian_embeds, gaussian_infers

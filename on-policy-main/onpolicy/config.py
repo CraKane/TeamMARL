@@ -208,6 +208,10 @@ def get_config():
                         default=False, help="Whether to use stacked_frames")
     parser.add_argument("--hidden_size", type=int, default=64,
                         help="Dimension of hidden layers for actor/critic networks") 
+    parser.add_argument("--latent_dim", type=int, default=32,
+                        help="Dimension of role distribution") 
+    parser.add_argument("--var_floor", type=int, default=0.002,
+                        help="The minimum variance for distributions") 
     parser.add_argument("--layer_N", type=int, default=1,
                         help="Number of layers for actor/critic networks")
     parser.add_argument("--use_ReLU", action='store_false',
@@ -280,9 +284,7 @@ def get_config():
     parser.add_argument("--log_interval", type=int, default=5, help="time duration between contiunous twice log printing.")
 
     # eval parameters
-    parser.add_argument("--use_eval", action='store_true', default=False, help="by default, do not start evaluation. If set`, start evaluation alongside with training.")
-    parser.add_argument("--check_eval", action='store_true', default=False,
-                        help="by default, do not start evaluation. If set`, start evaluation alongside with training.")
+    parser.add_argument("--use_eval", action='store_true', default=False, help="by default, do not start generalization evaluation. If set`, start generalization evaluation alongside with testing.")
     parser.add_argument("--eval_policy", action='store_true', default=False, help="by default, do not use rl policy in evaluation. If set`, start using rl policy to evaluate.")
     parser.add_argument("--eval_interval", type=int, default=25, help="time duration between contiunous twice evaluation progress.")
     parser.add_argument("--eval_episodes", type=int, default=32, help="number of episodes of a single evaluation.")
@@ -300,5 +302,6 @@ def get_config():
     parser.add_argument("--eval_policy_dir", type=str, default=None, help="by default None. set the path to evaluation policy model.")
     parser.add_argument("--eval_policy_num", type=int, default=0, help="by default 0. set the number to load the corresponding agent model.")
     parser.add_argument("--my_policy", type=int, default=3, help="by default 3. set the number to load the current method model to test the generalization.")
+
 
     return parser

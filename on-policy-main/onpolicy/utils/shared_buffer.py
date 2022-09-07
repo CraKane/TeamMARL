@@ -47,9 +47,30 @@ class SharedReplayBuffer(object):
         self.obs = np.zeros((self.episode_length + 1, self.n_rollout_threads, num_agents, *obs_shape), dtype=np.float32)
 
         self.rnn_states = np.zeros(
-            (self.episode_length + 1, self.n_rollout_threads, num_agents, self.recurrent_N, self.hidden_size),
+            (self.episode_length + 1, self.n_rollout_threads, num_agents, self.hidden_size),
             dtype=np.float32)
         self.rnn_states_critic = np.zeros_like(self.rnn_states)
+
+
+        ### coach related
+        self.coach_actions = np.zeros(
+            (self.episode_length, self.n_rollout_threads, num_agents, self.args.latent_dim), dtype=np.float32)
+        self.coach_action_log_probs = np.zeros(
+            (self.episode_length, self.n_rollout_threads, 1, 1), dtype=np.float32)
+        self.coach_values = np.zeros(
+            (self.episode_length + 1, self.n_rollout_threads, 1, 1), dtype=np.float32)
+        self.coach_returns = np.zeros_like(self.coach_values)
+        self.coach_rnn_states = np.zeros(
+            (self.episode_length + 1, self.n_rollout_threads, self.hidden_size),
+            dtype=np.float32)
+        self.coach_rnn_states_critic = np.zeros_like(self.coach_rnn_states)
+        self.rnn_states_obs = np.zeros(
+            (self.episode_length + 1, self.n_rollout_threads, num_agents, self.hidden_size),
+            dtype=np.float32)
+        self.coach_masks = np.ones((self.episode_length + 1, self.n_rollout_threads, 1, 1), dtype=np.float32)
+        self.coach_rewards = np.zeros(
+            (self.episode_length, self.n_rollout_threads, 1, 1), dtype=np.float32)
+
 
         self.value_preds = np.zeros(
             (self.episode_length + 1, self.n_rollout_threads, num_agents, 1), dtype=np.float32)
@@ -97,7 +118,8 @@ class SharedReplayBuffer(object):
             self.aga_update_tag = (self.total_update_step % self.total_period) >= self.iql_period
 
     def insert(self, share_obs, obs, rnn_states_actor, rnn_states_critic, actions, action_log_probs,
-               value_preds, rewards, masks, bad_masks=None, active_masks=None, available_actions=None):
+               value_preds, rewards, masks, coach_values, coach_actions, coach_action_log_probs, 
+                           coach_rnn_states, coach_rnn_states_critic, rnn_states_obs, coach_masks, bad_masks=None, active_masks=None, available_actions=None):
         """
         Insert data into the buffer.
         :param share_obs: (argparse.Namespace) arguments containing relevant model, policy, and env information.
@@ -122,10 +144,23 @@ class SharedReplayBuffer(object):
         self.value_preds[self.step] = value_preds.copy()
         self.rewards[self.step] = rewards.copy()
         self.masks[self.step + 1] = masks.copy()
+
+        ## coach related
+        self.coach_values[self.step] = coach_values.copy()
+        self.coach_actions[self.step] = coach_actions.copy()
+        self.coach_action_log_probs[self.step] = coach_action_log_probs.copy()
+        self.coach_rnn_states[self.step + 1] = coach_rnn_states.copy()
+        self.coach_rnn_states_critic[self.step + 1] = coach_rnn_states_critic.copy()
+        self.rnn_states_obs[self.step + 1] = rnn_states_obs.copy()
+        self.coach_masks[self.step + 1] = coach_masks.copy()
+        # print(rewards.shape, np.sum(rewards, 1).shape)
+        self.coach_rewards[self.step] = np.sum(rewards, 1).reshape(-1, 1, 1).copy()
+
         if bad_masks is not None:
             self.bad_masks[self.step + 1] = bad_masks.copy()
         if active_masks is not None:
             self.active_masks[self.step + 1] = active_masks.copy()
+
         if available_actions is not None and self.available_actions is not None:
             self.available_actions[self.step + 1] = available_actions.copy()
 
@@ -167,7 +202,6 @@ class SharedReplayBuffer(object):
         self.step = (self.step + 1) % self.episode_length
 
 
-
     def after_update(self):
         """Copy last timestep data to first index. Called after update to model."""
         self.share_obs[0] = self.share_obs[-1].copy()
@@ -180,6 +214,12 @@ class SharedReplayBuffer(object):
         if self.available_actions is not None:
             self.available_actions[0] = self.available_actions[-1].copy()
 
+        # coach
+        self.coach_rnn_states[0] = self.coach_rnn_states[-1].copy()
+        self.coach_rnn_states_critic[0] = self.coach_rnn_states_critic[-1].copy()
+        self.rnn_states_obs[0] = self.rnn_states_obs[-1].copy()
+        self.coach_masks[0] = self.coach_masks[-1].copy()
+
         if self.args.aga_tag:
             self.update_update_tag()
 
@@ -187,10 +227,12 @@ class SharedReplayBuffer(object):
         """Copy last timestep data to first index. This method is used for Hanabi."""
         self.rnn_states[0] = self.rnn_states[-1].copy()
         self.rnn_states_critic[0] = self.rnn_states_critic[-1].copy()
+        self.rnn_states_obs[0] = self.rnn_states_obs[-1].copy()
         self.masks[0] = self.masks[-1].copy()
         self.bad_masks[0] = self.bad_masks[-1].copy()
 
-    def compute_returns(self, next_value, value_normalizer=None):
+    # complete
+    def compute_returns(self, next_value, coach_next_value, value_normalizer=None):
         """
         Compute returns either as discounted sum of rewards, or using GAE.
         :param next_value: (np.ndarray) value predictions for the step after the last episode step.
@@ -198,39 +240,67 @@ class SharedReplayBuffer(object):
         """
         if self._use_proper_time_limits:
             if self._use_gae:
-                self.value_preds[-1] = next_value
+                self.value_preds[-1] = next_value  # (1,3,1)
+                self.coach_values[-1] = coach_next_value   # (1,1,1)
+
                 gae = 0
+                coach_gae = 0
                 for step in reversed(range(self.rewards.shape[0])):
                     if self._use_popart:
                         # step + 1
                         delta = self.rewards[step] + self.gamma * value_normalizer.denormalize(
                             self.value_preds[step + 1]) * self.masks[step + 1] \
                                 - value_normalizer.denormalize(self.value_preds[step])
+
                         gae = delta + self.gamma * self.gae_lambda * gae * self.masks[step + 1]
                         gae = gae * self.bad_masks[step + 1]
                         self.returns[step] = gae + value_normalizer.denormalize(self.value_preds[step])
+
+                        # coach
+                        coach_delta = self.coach_rewards[step] + self.gamma * value_normalizer.denormalize(
+                            self.coach_values[step + 1]) * self.coach_masks[step + 1] \
+                                - value_normalizer.denormalize(self.coach_values[step])
+                        coach_gae = coach_delta + self.gamma * self.gae_lambda * coach_gae * self.coach_masks[step + 1]
+                        self.coach_returns[step] = coach_gae + value_normalizer.denormalize(self.coach_values[step])
                     else:
                         delta = self.rewards[step] + self.gamma * self.value_preds[step + 1] * self.masks[step + 1] - \
                                 self.value_preds[step]
                         gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
                         gae = gae * self.bad_masks[step + 1]
                         self.returns[step] = gae + self.value_preds[step]
+
+                        # coach
+                        coach_delta = self.coach_rewards[step] + self.gamma * self.coach_values[step + 1] * self.coach_masks[step + 1] - \
+                                self.coach_values[step]
+                        coach_gae = coach_delta + self.gamma * self.gae_lambda * self.coach_masks[step + 1] * coach_gae
+                        self.coach_returns[step] = coach_gae + self.coach_values[step]
             else:
                 self.returns[-1] = next_value
+                self.coach_returns[-1] = coach_next_value
                 for step in reversed(range(self.rewards.shape[0])):
                     if self._use_popart:
                         self.returns[step] = (self.returns[step + 1] * self.gamma * self.masks[step + 1] + self.rewards[
                             step]) * self.bad_masks[step + 1] \
                                              + (1 - self.bad_masks[step + 1]) * value_normalizer.denormalize(
                             self.value_preds[step])
+
+                        # coach
+                        self.coach_returns[step] = (self.coach_returns[step + 1] * self.gamma * self.coach_masks[step + 1] + self.coach_rewards[
+                            step]) 
                     else:
                         self.returns[step] = (self.returns[step + 1] * self.gamma * self.masks[step + 1] + self.rewards[
                             step]) * self.bad_masks[step + 1] \
                                              + (1 - self.bad_masks[step + 1]) * self.value_preds[step]
+
+                        # coach
+                        self.coach_returns[step] = (self.coach_returns[step + 1] * self.gamma * self.coach_masks[step + 1] + self.coach_rewards[
+                            step])
         else:
             if self._use_gae:
                 self.value_preds[-1] = next_value
+                self.coach_values[-1] = coach_next_value
                 gae = 0
+                coach_gae = 0
                 for step in reversed(range(self.rewards.shape[0])):
                     if self._use_popart:
                         delta = self.rewards[step] + self.gamma * value_normalizer.denormalize(
@@ -238,17 +308,37 @@ class SharedReplayBuffer(object):
                                 - value_normalizer.denormalize(self.value_preds[step])
                         gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
                         self.returns[step] = gae + value_normalizer.denormalize(self.value_preds[step])
+                        # print(delta.shape, gae.shape)
+
+
+                        # coach
+                        coach_delta = self.coach_rewards[step] + self.gamma * value_normalizer.denormalize(
+                            self.coach_values[step + 1]) * self.coach_masks[step + 1] \
+                                - value_normalizer.denormalize(self.coach_values[step])
+                        coach_gae = coach_delta + self.gamma * self.gae_lambda * self.coach_masks[step + 1] * coach_gae
+                        self.coach_returns[step] = coach_gae + value_normalizer.denormalize(self.coach_values[step])
+                        # print(coach_delta.shape, coach_gae.shape, self.coach_returns[step].shape)
                     else:
                         delta = self.rewards[step] + self.gamma * self.value_preds[step + 1] * self.masks[step + 1] - \
                                 self.value_preds[step]
                         gae = delta + self.gamma * self.gae_lambda * self.masks[step + 1] * gae
                         self.returns[step] = gae + self.value_preds[step]
+
+                        # coach
+                        coach_delta = self.coach_rewards[step] + self.gamma * self.coach_values[step + 1] * self.coach_masks[step + 1] - \
+                                self.coach_values[step]
+                        coach_gae = coach_delta + self.gamma * self.gae_lambda * self.coach_masks[step + 1] * coach_gae
+                        self.coach_returns[step] = coach_gae + self.coach_values[step]
             else:
                 self.returns[-1] = next_value
+                self.coach_returns[-1] = coach_next_value
                 for step in reversed(range(self.rewards.shape[0])):
                     self.returns[step] = self.returns[step + 1] * self.gamma * self.masks[step + 1] + self.rewards[step]
 
-    def feed_forward_generator(self, advantages, num_mini_batch=None, mini_batch_size=None):
+                    # coach
+                    self.coach_returns[step] = self.coach_returns[step + 1] * self.gamma * self.coach_masks[step + 1] + self.coach_rewards[step]
+
+    def feed_forward_generator(self, advantages, coach_advantages, num_mini_batch=None, mini_batch_size=None):
         """
         Yield training data for MLP policies.
         :param advantages: (np.ndarray) advantage estimates.
@@ -261,6 +351,8 @@ class SharedReplayBuffer(object):
             batch_size = n_rollout_threads * episode_length
         else:
             batch_size = n_rollout_threads * episode_length * num_agents
+        coach_batch_size = n_rollout_threads * episode_length
+        # print(batch_size, coach_batch_size)
 
         if mini_batch_size is None:
             assert batch_size >= num_mini_batch, (
@@ -271,9 +363,14 @@ class SharedReplayBuffer(object):
                           n_rollout_threads * episode_length * num_agents,
                           num_mini_batch))
             mini_batch_size = batch_size // num_mini_batch
+            coach_mini_batch_size = coach_batch_size // num_mini_batch
 
         rand = torch.randperm(batch_size).numpy()
-        sampler = [rand[i * mini_batch_size:(i + 1) * mini_batch_size] for i in range(num_mini_batch)]
+        coach_rand = torch.randperm(coach_batch_size).numpy()
+        # print(rand, coach_rand)
+        sampler = [(rand[i * mini_batch_size:(i + 1) * mini_batch_size], \
+            coach_rand[i * coach_mini_batch_size:(i + 1) * coach_mini_batch_size]) for i in range(num_mini_batch)]
+        # print(sampler)
 
         if  self.args.aga_tag and self.aga_update_tag:
             share_obs = self.share_obs[:-1,:,self.update_index].reshape(-1, *self.share_obs.shape[3:])
@@ -289,6 +386,9 @@ class SharedReplayBuffer(object):
             active_masks = self.active_masks[:-1,:,self.update_index].reshape(-1, 1)
             action_log_probs = self.action_log_probs[:,:,self.update_index].reshape(-1, self.action_log_probs.shape[-1])
             advantages = advantages[:,:,self.update_index].reshape(-1, 1)
+
+
+            rnn_states_obs = self.rnn_states_obs[:-1,:,self.update_index].reshape(-1, *self.rnn_states_obs.shape[3:])
         else:
             share_obs = self.share_obs[:-1].reshape(-1, *self.share_obs.shape[3:])
             obs = self.obs[:-1].reshape(-1, *self.obs.shape[3:])
@@ -304,30 +404,67 @@ class SharedReplayBuffer(object):
             action_log_probs = self.action_log_probs.reshape(-1, self.action_log_probs.shape[-1])
             advantages = advantages.reshape(-1, 1)
 
+
+            rnn_states_obs = self.rnn_states_obs[:-1].reshape(-1, *self.rnn_states_obs.shape[3:])
+
+        # print(share_obs.shape, obs.shape, rnn_states.shape, rnn_states_critic.shape, actions.shape, available_actions.shape, value_preds.shape, returns.shape, masks.shape, active_masks.shape, action_log_probs.shape, advantages.shape)
+        # coach
+        coach_actions = self.coach_actions.reshape(-1, self.coach_actions.shape[-2], self.coach_actions.shape[-1])
+        coach_action_log_probs = self.coach_action_log_probs.reshape(-1, self.coach_action_log_probs.shape[-1])
+        coach_values = self.coach_values[:-1].reshape(-1, self.coach_values.shape[-1])
+        coach_returns = self.coach_returns[:-1].reshape(-1, self.coach_returns.shape[-1])
+        coach_rnn_states = self.coach_rnn_states[:-1].reshape(-1, self.coach_rnn_states.shape[-1])
+        coach_rnn_states_critic = self.coach_rnn_states_critic[:-1].reshape(-1, self.coach_rnn_states_critic.shape[-1])
+        coach_masks = self.coach_masks[:-1].reshape(-1, self.coach_masks.shape[-1])
+        coach_advantages = coach_advantages.reshape(-1, 1)
+
+        # print(coach_actions.shape, coach_action_log_probs.shape, coach_values.shape, coach_returns.shape, coach_rnn_states.shape, coach_rnn_states_critic.shape, coach_masks.shape, coach_advantages.shape)
         for indices in sampler:
             # obs size [T+1 N M Dim]-->[T N M Dim]-->[T*N*M,Dim]-->[index,Dim]
-            share_obs_batch = share_obs[indices]
-            obs_batch = obs[indices]
-            rnn_states_batch = rnn_states[indices]
-            rnn_states_critic_batch = rnn_states_critic[indices]
-            actions_batch = actions[indices]
+            share_obs_batch = share_obs[indices[0]]
+            obs_batch = obs[indices[0]]
+            rnn_states_batch = rnn_states[indices[0]]
+            rnn_states_critic_batch = rnn_states_critic[indices[0]]
+            actions_batch = actions[indices[0]]
             if self.available_actions is not None:
-                available_actions_batch = available_actions[indices]
+                available_actions_batch = available_actions[indices[0]]
             else:
                 available_actions_batch = None
-            value_preds_batch = value_preds[indices]
-            return_batch = returns[indices]
-            masks_batch = masks[indices]
-            active_masks_batch = active_masks[indices]
-            old_action_log_probs_batch = action_log_probs[indices]
+            value_preds_batch = value_preds[indices[0]]
+            return_batch = returns[indices[0]]
+            masks_batch = masks[indices[0]]
+            active_masks_batch = active_masks[indices[0]]
+            old_action_log_probs_batch = action_log_probs[indices[0]]
             if advantages is None:
                 adv_targ = None
             else:
-                adv_targ = advantages[indices]
+                adv_targ = advantages[indices[0]]
+
+
+            rnn_states_obs_batch = rnn_states_obs[indices[0]]
+
+            # coach
+            coach_actions_batch = coach_actions[indices[1]]
+            coach_old_action_log_probs_batch = coach_action_log_probs[indices[1]]
+            coach_values_batch = coach_values[indices[1]]
+            coach_returns_batch = coach_returns[indices[1]]
+            coach_rnn_states_batch = coach_rnn_states[indices[1]]
+            coach_rnn_states_critic_batch = coach_rnn_states_critic[indices[1]]
+            coach_masks_batch = coach_masks[indices[1]]
+
+            if coach_advantages is None:
+                coach_adv_targ = None
+            else:
+                coach_adv_targ = coach_advantages[indices[1]]
+            # print(share_obs_batch.shape, rnn_states_batch.shape, rnn_states_critic_batch.shape, actions_batch.shape, value_preds_batch.shape, return_batch.shape, masks_batch.shape, active_masks_batch.shape, old_action_log_probs_batch.shape)
+            # print(adv_targ.shape, available_actions_batch.shape, coach_actions_batch.shape, coach_old_action_log_probs_batch.shape, coach_values_batch.shape, coach_returns_batch.shape, coach_rnn_states_batch.shape, coach_rnn_states_critic_batch.shape)
+            # print(coach_masks_batch.shape, coach_adv_targ.shape)
 
             yield share_obs_batch, obs_batch, rnn_states_batch, rnn_states_critic_batch, actions_batch,\
                   value_preds_batch, return_batch, masks_batch, active_masks_batch, old_action_log_probs_batch,\
-                  adv_targ, available_actions_batch
+                  adv_targ, available_actions_batch, coach_actions_batch, coach_old_action_log_probs_batch,\
+                    coach_values_batch, coach_returns_batch, coach_rnn_states_batch, coach_rnn_states_critic_batch,\
+                    rnn_states_obs_batch, coach_masks_batch, coach_adv_targ
 
     def update_update_tag(self):
         if self.args.aga_tag and self.aga_update_tag:

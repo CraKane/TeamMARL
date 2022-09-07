@@ -55,9 +55,9 @@ def parse_args(args, parser):
                         default='navigation_control_full', help="Which scenario to run on")
     parser.add_argument("--collision_penal", type=float, default=0)
     parser.add_argument("--vision", type=float, default=1)
-    parser.add_argument("--num_landmarks", type=int, default=3)
+    parser.add_argument("--num_landmarks", type=int, default=4)
     parser.add_argument('--num_agents', type=int,
-                        default=2, help="number of players")
+                        default=4, help="number of players")
 
     all_args = parser.parse_known_args(args)[0]
 
@@ -79,7 +79,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
         "The simple_speaker_listener scenario can not use shared policy. Please check the config.py.")
 
     # cuda
-    if all_args.cuda and torch.cuda.is_available():
+    if all_args.cuda and not torch.cuda.is_available():
         print("choose to use gpu...")
         device = torch.device("cuda:0")
         torch.set_num_threads(all_args.n_training_threads)
@@ -91,7 +91,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
         device = torch.device("cpu")
         torch.set_num_threads(all_args.n_training_threads)
 
-    run_dir = '../../results/population_idv_mappo_turn_update/'
+    run_dir = '../../results/MPE/population_idv_mappo_total_update/'
     run_dir = run_dir + 'run{}'.format(i)
     run_dir = Path(run_dir)
 
@@ -129,7 +129,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
         "num_agents": num_agents,
         "device": device,
         "run_dir": run_dir,
-        "eval_policy_dir": '../../results/' + test_policy + '/run{}/models'.format(test_run) if test_run else None,
+        "eval_policy_dir": '../../results/MPE/' + test_policy + '/run{}/models'.format(test_run) if test_run else None,
         "eval_policy_num": test_model if test_model is not None else None,
     }
 
@@ -144,7 +144,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
 
     # post process
     envs.close()
-    if all_args.use_eval and eval_envs is not envs:
+    if eval_envs is not envs:
         eval_envs.close()
 
     if all_args.use_wandb:
@@ -157,15 +157,15 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
 
 
 if __name__ == "__main__":
-    seeds = [2021]#, 2022, 114]#, 2, 2021114]
-    test_policy_list = ['control_idv_mappo', 'population_idv_mappo_total_update', 'population_idv_mappo']
+    seeds = [2021, 2022, 114]#, 2, 2021114]
+    test_policy_list = ['4-3-mappo', '4-3-each_update', '4-3-turn_update', '4-3-total_update', '4-4-mappo', '4-4-mappo_role', '4-4-mappo_std_fixed']
     mean_rewards = []
     for i in range(len(seeds)):
         for test_policy in tqdm(test_policy_list):
-            for j in range(1):
-                num = 4 if test_policy == 'control_idv_mappo' else 6
+            for j in range(3):
+                num = 4 if 'mappo' in test_policy else 6
                 from itertools import combinations
-                pers = list(combinations(range(num), 2))     # for my policy
+                pers = list(combinations(range(num), 2))  # for my policy, 3vs1, then 1, 2vs2, then 2
                 np.random.shuffle(pers)
                 for k in pers:
                     mean_reward = main(sys.argv[1:], seeds[i], i + 1, test_run=j+1, test_model=k, test_policy=test_policy)

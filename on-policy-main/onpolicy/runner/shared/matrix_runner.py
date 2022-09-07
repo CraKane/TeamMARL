@@ -32,14 +32,18 @@ class MatrixRunner(Runner):
 
             for step in range(self.episode_length):
                 # Sample actions
-                values, actions, action_log_probs, rnn_states, rnn_states_critic = self.collect(step)
+                values, actions, action_log_probs, rnn_states, rnn_states_critic,\
+                coach_values, coach_actions, coach_action_log_probs, coach_rnn_states, \
+                coach_rnn_states_critic, rnn_states_obs = self.collect(step)
 
                 # Obser reward and next obs
                 obs, share_obs, rewards, dones, infos, available_actions = self.envs.step(actions)
 
                 data = obs, share_obs, rewards, dones, infos, available_actions, \
                        values, actions, action_log_probs, \
-                       rnn_states, rnn_states_critic
+                       rnn_states, rnn_states_critic, \
+                       coach_values, coach_actions, coach_action_log_probs, \
+                       coach_rnn_states, coach_rnn_states_critic, rnn_states_obs
 
                 # insert data into buffer
                 self.insert(data)
@@ -51,7 +55,7 @@ class MatrixRunner(Runner):
             # post process
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
             # save model
-            if (episode % self.save_interval == 0 or episode == episodes - 1):
+            if (episode % len(self.pers) == 0 or episode == episodes - 1):
                 self.save()
 
             # log information
@@ -99,7 +103,7 @@ class MatrixRunner(Runner):
                 self.log_train(train_infos, total_num_steps, self.envs.traverse, self.envs.abs_traverse, self.envs.relative_traverse)
 
             # eval
-            if episode % self.eval_interval == 0 and self.check_eval:
+            if episode % self.eval_interval == 0:
                 self.eval(total_num_steps)
 
     def warmup(self):
@@ -117,34 +121,60 @@ class MatrixRunner(Runner):
     @torch.no_grad()
     def collect(self, step):
         self.trainer.prep_rollout()
-        value, action, action_log_prob, rnn_state, rnn_state_critic \
-            = self.trainer.policy.get_actions(np.concatenate(self.buffer.share_obs[step]),
+        value, action, action_log_prob, rnn_state, rnn_state_critic, \
+        coach_value, coach_actions, coach_action_log_prob, coach_rnn_state, \
+        coach_rnn_state_critic, rnn_states_obs = self.trainer.policy.get_actions(np.concatenate(self.buffer.share_obs[step]),
                                               np.concatenate(self.buffer.obs[step]),
                                               np.concatenate(self.buffer.rnn_states[step]),
                                               np.concatenate(self.buffer.rnn_states_critic[step]),
-                                              np.concatenate(self.buffer.masks[step]),)
+                                              self.buffer.coach_rnn_states[step],
+                                              self.buffer.coach_rnn_states_critic[step],
+                                              np.concatenate(self.buffer.rnn_states_obs[step]),
+                                              np.concatenate(self.buffer.masks[step]),
+                                              )
         # [self.envs, agents, dim]
         values = np.array(np.split(_t2n(value), self.n_rollout_threads))
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
         action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
         rnn_states = np.array(np.split(_t2n(rnn_state), self.n_rollout_threads))
         rnn_states_critic = np.array(np.split(_t2n(rnn_state_critic), self.n_rollout_threads))
-
-        return values, actions, action_log_probs, rnn_states, rnn_states_critic
+        coach_values = np.array(np.split(_t2n(coach_value), self.n_rollout_threads))
+        coach_action_log_probs = np.array(np.split(_t2n(coach_action_log_prob), self.n_rollout_threads))
+        coach_rnn_states = _t2n(coach_rnn_state)
+        coach_rnn_states_critic = _t2n(coach_rnn_state_critic)
+        rnn_states_obs = np.array(np.split(_t2n(rnn_states_obs), self.n_rollout_threads))
+        # print(values.shape, actions.shape, rnn_states.shape, rnn_states_critic.shape, coach_values.shape, coach_rnn_states.shape, coach_rnn_states_critic.shape, action_log_probs.shape, coach_action_log_probs.shape, coach_actions.shape)
+        return values, actions, action_log_probs, rnn_states, rnn_states_critic,\
+        coach_values, coach_actions, coach_action_log_probs, coach_rnn_states, \
+        coach_rnn_states_critic, rnn_states_obs
 
     def insert(self, data):
         obs, share_obs, rewards, dones, infos, available_actions, \
-        values, actions, action_log_probs, rnn_states, rnn_states_critic = data
+        values, actions, action_log_probs, rnn_states, rnn_states_critic,\
+        coach_values, coach_actions, coach_action_log_probs, coach_rnn_states, \
+        coach_rnn_states_critic, rnn_states_obs = data
 
         dones_env = np.all(dones, axis=1)
 
+        # If all env end, then rnn states need 0
         rnn_states[dones_env == True] = np.zeros(
-            ((dones_env == True).sum(), self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
+            ((dones_env == True).sum(), self.num_agents, self.hidden_size), dtype=np.float32)
         rnn_states_critic[dones_env == True] = np.zeros(
             ((dones_env == True).sum(), self.num_agents, *self.buffer.rnn_states_critic.shape[3:]), dtype=np.float32)
 
+        ## coach state
+        coach_rnn_states[dones_env == True] = np.zeros(
+            ((dones_env == True).sum(), self.hidden_size), dtype=np.float32)
+        coach_rnn_states_critic[dones_env == True] = np.zeros(
+            ((dones_env == True).sum(), self.hidden_size), dtype=np.float32)
+        rnn_states_obs[dones_env == True] = np.zeros(
+            ((dones_env == True).sum(), self.num_agents, self.hidden_size), dtype=np.float32)
+
         masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
         masks[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, 1), dtype=np.float32)
+
+        coach_masks = np.ones((self.n_rollout_threads, 1, 1), dtype=np.float32)
+        coach_masks[dones_env == True] = np.zeros(((dones_env == True).sum(), 1, 1), dtype=np.float32)
 
         active_masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
         active_masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
@@ -158,7 +188,8 @@ class MatrixRunner(Runner):
             share_obs = obs
 
         self.buffer.insert(share_obs, obs, rnn_states, rnn_states_critic,
-                           actions, action_log_probs, values, rewards, masks, bad_masks, active_masks,
+                           actions, action_log_probs, values, rewards, masks, coach_values, coach_actions, coach_action_log_probs, 
+                           coach_rnn_states, coach_rnn_states_critic, rnn_states_obs, coach_masks, bad_masks, active_masks,
                            available_actions)
 
     def log_train(self, train_infos, total_num_steps, cover_rate, max_traverse, relative_cover_rate):
@@ -194,9 +225,7 @@ class MatrixRunner(Runner):
             one_step_rewards = []
             
 
-            eval_rnn_states = np.zeros(
-                (self.n_eval_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size),
-                dtype=np.float32)
+            eval_rnn_states = np.zeros((self.n_eval_rollout_threads, *self.buffer.rnn_states.shape[2:]), dtype=np.float32)
             eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
             # print('eval_obs = {}'.format(eval_obs.shape))
             self.restore(eval=True, team=per)
@@ -219,12 +248,11 @@ class MatrixRunner(Runner):
                 eval_dones_env = np.all(eval_dones, axis=1)
                 # print('eval_dones = {}  eval_dones_env = {}'.format(eval_dones, eval_dones_env))
                 eval_rnn_states[eval_dones_env == True] = np.zeros(
-                    ((eval_dones_env == True).sum(), self.num_agents, self.recurrent_N, self.hidden_size),
-                    dtype=np.float32)
+                    ((eval_dones_env == True).sum(), self.num_agents, self.hidden_size), dtype=np.float32)
 
                 eval_masks = np.ones((self.all_args.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
                 eval_masks[eval_dones_env == True] = np.zeros(((eval_dones_env == True).sum(), self.num_agents, 1),
-                                                              dtype=np.float32)
+                                                          dtype=np.float32)
 
             for eval_i in range(self.n_eval_rollout_threads):
                 if eval_dones_env[eval_i]:
@@ -234,10 +262,10 @@ class MatrixRunner(Runner):
             self.eval_envs.eval_traverse()
             eval_cover_rate.append(self.eval_envs.traverse)
 
+
         team_average_step_rewards = np.mean(eval_step_rewards)*self.num_agents
         team_average_cover_rate = np.mean(eval_cover_rate)
-        eval_env_infos = {'team_average_step_rewards': team_average_step_rewards,
-                          'team_average_cover_rate': team_average_cover_rate}
+        eval_env_infos = {'team_average_step_rewards': team_average_step_rewards, 'team_average_cover_rate':team_average_cover_rate}
         self.log_env(eval_env_infos, total_num_steps)
 
     def log_env(self, eval_env_infos, total_num_steps):
@@ -247,3 +275,4 @@ class MatrixRunner(Runner):
                 wandb.log({k: v}, step=total_num_steps)
             else:
                 self.writter.add_scalars(k, {k: v}, total_num_steps)
+

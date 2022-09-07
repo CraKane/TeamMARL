@@ -49,9 +49,14 @@ class Scenario(BaseScenario):
             agent.state.p_pos = np.random.uniform(-1, +1, world.dim_p)
             agent.state.p_vel = np.zeros(world.dim_p)
             agent.state.c = np.zeros(world.dim_c)
+
+        poses = [[-0.62, 0.8], [0.7, 0.3], [-0.5, -0.5], [0.4, -0.62]]
         for i, landmark in enumerate(world.landmarks):
-            landmark.state.p_pos = np.random.uniform(-1, +1, world.dim_p)
+            landmark.state.p_pos = np.array(poses[i])
             landmark.state.p_vel = np.zeros(world.dim_p)
+        # for i, landmark in enumerate(world.landmarks):
+            # landmark.state.p_pos = np.random.uniform(-1, +1, world.dim_p)
+            # landmark.state.p_vel = np.zeros(world.dim_p)
 
         world.dists = []
 

@@ -34,6 +34,7 @@ def make_mat_game_from_file(filename):
         init_state = 0
         env = MatrixGame(r_mat, trans_mat, init_state, end_state, max_episode_length,evaluate_mat=True)
         return env
+        
 class MatrixGame:
     def __init__(self,r_mat,trans_mat,init_state,end_state,max_episode_length,evaluate_mat=False):
         r_shape = np.shape(r_mat)
@@ -257,7 +258,7 @@ def main(args, seed):
     # env
     all_args.map_name = 'random_matrix_game_3_symmetric'
     envs = make_mat_game_from_file('{}.pkl'.format(all_args.map_name))
-    eval_envs =  make_mat_game_from_file('{}.pkl'.format(all_args.map_name)) if all_args.check_eval else None
+    eval_envs = make_mat_game_from_file('{}.pkl'.format(all_args.map_name))
     env_info = envs.get_env_info()
     num_agents = env_info["n_agents"]
     all_args.num_agents = num_agents
@@ -269,7 +270,6 @@ def main(args, seed):
         "num_agents": num_agents,
         "device": device,
         "run_dir": run_dir,
-        "eval_policy_dir": None
     }
 
     # build populations
@@ -292,7 +292,7 @@ def main(args, seed):
 
     # post process
     envs.reset()
-    if all_args.use_eval and eval_envs is not envs:
+    if eval_envs is not envs:
         eval_envs.reset()
 
     if all_args.use_wandb:

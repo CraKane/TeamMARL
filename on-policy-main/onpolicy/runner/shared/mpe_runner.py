@@ -24,25 +24,33 @@ class MPERunner(Runner):
 
             for step in range(self.episode_length):
                 # Sample actions
-                values, actions, action_log_probs, rnn_states, rnn_states_critic, actions_env = self.collect(step)
-                    
+                values, actions, action_log_probs, rnn_states, rnn_states_critic, actions_env,\
+                coach_values, coach_actions, coach_action_log_probs, coach_rnn_states, coach_rnn_states_critic,\
+                coach_rnn_states_obs = self.collect(step)
+
                 # Obser reward and next obs
                 obs, rewards, dones, infos = self.envs.step(actions_env)
 
-                data = obs, rewards, dones, infos, values, actions, action_log_probs, rnn_states, rnn_states_critic
+                data = obs, rewards, dones, infos, values, actions, action_log_probs, \
+                       rnn_states, rnn_states_critic, \
+                       coach_values, coach_actions, coach_action_log_probs, \
+                       coach_rnn_states, coach_rnn_states_critic, coach_rnn_states_obs
 
                 # insert data into buffer
                 self.insert(data)
 
-            # compute return and update network
-            self.compute()
-            train_infos = self.train()
+            if (episode % 6 == 0 or episode == episodes - 1):
+                for i in range(len(self.pers)):
+                    self.restore()
+                    # compute return and update network
+                    self.compute()
+                    train_infos = self.train()
             
             # post process
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
             
             # save model
-            if (episode % self.save_interval == 0 or episode == episodes - 1):
+            if (episode % len(self.pers) == 0 or episode == episodes - 1):
                 self.save()
 
             # log information
@@ -74,7 +82,7 @@ class MPERunner(Runner):
                 # self.log_env(env_infos, total_num_steps)
 
             # eval
-            if episode % self.eval_interval == 0 and self.check_eval:
+            if episode % self.eval_interval == 0:
                 self.eval(total_num_steps)
 
     def warmup(self):
@@ -94,18 +102,31 @@ class MPERunner(Runner):
     @torch.no_grad()
     def collect(self, step):
         self.trainer.prep_rollout()
-        value, action, action_log_prob, rnn_states, rnn_states_critic \
-            = self.trainer.policy.get_actions(np.concatenate(self.buffer.share_obs[step]),
-                            np.concatenate(self.buffer.obs[step]),
-                            np.concatenate(self.buffer.rnn_states[step]),
-                            np.concatenate(self.buffer.rnn_states_critic[step]),
-                            np.concatenate(self.buffer.masks[step]))
+        value, action, action_log_prob, rnn_state, rnn_state_critic, \
+        coach_value, coach_actions, coach_action_log_prob, coach_rnn_state, coach_rnn_state_critic, \
+        rnn_states_obs = self.trainer.policy.get_actions(np.concatenate(self.buffer.share_obs[step]),
+                                              np.concatenate(self.buffer.obs[step]),
+                                              np.concatenate(self.buffer.rnn_states[step]),
+                                              np.concatenate(self.buffer.rnn_states_critic[step]),
+                                              self.buffer.coach_rnn_states[step],
+                                              self.buffer.coach_rnn_states_critic[step],
+                                              np.concatenate(self.buffer.rnn_states_obs[step]),
+                                              np.concatenate(self.buffer.masks[step]),
+                                              )
+
         # [self.envs, agents, dim]
         values = np.array(np.split(_t2n(value), self.n_rollout_threads))
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
         action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
-        rnn_states = np.array(np.split(_t2n(rnn_states), self.n_rollout_threads))
-        rnn_states_critic = np.array(np.split(_t2n(rnn_states_critic), self.n_rollout_threads))
+        rnn_states = np.array(np.split(_t2n(rnn_state), self.n_rollout_threads))
+        rnn_states_critic = np.array(np.split(_t2n(rnn_state_critic), self.n_rollout_threads))
+        coach_values = np.array(np.split(_t2n(coach_value), self.n_rollout_threads))
+        coach_action_log_probs = np.array(np.split(_t2n(coach_action_log_prob), self.n_rollout_threads))
+        coach_rnn_states = _t2n(coach_rnn_state)
+        coach_rnn_states_critic = _t2n(coach_rnn_state_critic)
+        rnn_states_obs = np.array(np.split(_t2n(rnn_states_obs), self.n_rollout_threads))
+        # print(values.shape, actions.shape, rnn_states.shape, rnn_states_critic.shape, coach_values.shape, coach_rnn_states.shape, coach_rnn_states_critic.shape, action_log_probs.shape, coach_action_log_probs.shape, coach_actions.shape)
+        
         # rearrange action
         if self.envs.action_space[0].__class__.__name__ == 'MultiDiscrete':
             for i in range(self.envs.action_space[0].shape):
@@ -119,15 +140,37 @@ class MPERunner(Runner):
         else:
             raise NotImplementedError
 
-        return values, actions, action_log_probs, rnn_states, rnn_states_critic, actions_env
+        return values, actions, action_log_probs, rnn_states, rnn_states_critic, actions_env,\
+        coach_values, coach_actions, coach_action_log_probs, coach_rnn_states, coach_rnn_states_critic,\
+        rnn_states_obs
 
     def insert(self, data):
-        obs, rewards, dones, infos, values, actions, action_log_probs, rnn_states, rnn_states_critic = data
+        obs, rewards, dones, infos, values, actions, action_log_probs, rnn_states, rnn_states_critic,\
+        coach_values, coach_actions, coach_action_log_probs, coach_rnn_states, \
+        coach_rnn_states_critic, rnn_states_obs = data
 
-        rnn_states[dones == True] = np.zeros(((dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
-        rnn_states_critic[dones == True] = np.zeros(((dones == True).sum(), *self.buffer.rnn_states_critic.shape[3:]), dtype=np.float32)
+        dones_env = np.all(dones, axis=1)
+
+        # If all env end, then rnn states need 0
+        rnn_states[dones_env == True] = np.zeros(
+            ((dones_env == True).sum(), self.num_agents, self.hidden_size), dtype=np.float32)
+        rnn_states_critic[dones_env == True] = np.zeros(
+            ((dones_env == True).sum(), self.num_agents, *self.buffer.rnn_states_critic.shape[3:]), dtype=np.float32)
+
+        ## coach state
+        coach_rnn_states[dones_env == True] = np.zeros(
+            ((dones_env == True).sum(), self.hidden_size), dtype=np.float32)
+        coach_rnn_states_critic[dones_env == True] = np.zeros(
+            ((dones_env == True).sum(), self.hidden_size), dtype=np.float32)
+
+        rnn_states_obs[dones_env == True] = np.zeros(
+            ((dones_env == True).sum(), self.num_agents, self.hidden_size), dtype=np.float32)
+
         masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
-        masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
+        masks[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, 1), dtype=np.float32)
+
+        coach_masks = np.ones((self.n_rollout_threads, 1, 1), dtype=np.float32)
+        coach_masks[dones_env == True] = np.zeros(((dones_env == True).sum(), 1, 1), dtype=np.float32)
 
         if self.use_centralized_V:
             share_obs = obs.reshape(self.n_rollout_threads, -1)
@@ -135,12 +178,14 @@ class MPERunner(Runner):
         else:
             share_obs = obs
 
-        self.buffer.insert(share_obs, obs, rnn_states, rnn_states_critic, actions, action_log_probs, values, rewards, masks)
+        self.buffer.insert(share_obs, obs, rnn_states, rnn_states_critic,
+                           actions, action_log_probs, values, rewards, masks, coach_values, coach_actions, coach_action_log_probs, 
+                           coach_rnn_states, coach_rnn_states_critic, rnn_states_obs, coach_masks)
 
     @torch.no_grad()
     def eval(self, total_num_steps):
         from itertools import combinations
-        pers = list(combinations(range(self.num_agents + 1), self.num_agents))
+        pers = list(combinations(range(self.num_agents + 2), self.num_agents))
         eval_episode = 0
 
         eval_episode_rewards = []
@@ -161,6 +206,7 @@ class MPERunner(Runner):
                                                     np.concatenate(eval_rnn_states),
                                                     np.concatenate(eval_masks),
                                                     deterministic=True)
+                
                 eval_actions = np.array(np.split(_t2n(eval_action), self.n_eval_rollout_threads))
                 eval_rnn_states = np.array(np.split(_t2n(eval_rnn_states), self.n_eval_rollout_threads))
             
@@ -180,7 +226,8 @@ class MPERunner(Runner):
                 eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(eval_actions_env)
                 episode_rewards += eval_rewards
 
-                eval_rnn_states[eval_dones == True] = np.zeros(((eval_dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
+                dones_env = np.all(eval_dones, axis=1)
+                eval_rnn_states[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, self.hidden_size), dtype=np.float32)
                 eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
                 eval_masks[eval_dones == True] = np.zeros(((eval_dones == True).sum(), 1), dtype=np.float32)
 

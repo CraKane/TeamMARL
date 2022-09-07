@@ -66,13 +66,13 @@ def parse_args(args, parser):
     parser.add_argument("--use_state_agent", action='store_true', default=False)
     parser.add_argument("--use_mustalive", action='store_false', default=True)
     parser.add_argument("--add_center_xy", action='store_true', default=False)
-
+    parser.add_argument('--num_agents', type=int,
+                        default=8, help="number of players")
     all_args = parser.parse_known_args(args)[0]
 
     return all_args
 
-
-def main(args):
+def main(args, seed):
     parser = get_config()
     all_args = parse_args(args, parser)
 
@@ -85,7 +85,7 @@ def main(args):
         raise NotImplementedError
 
     # cuda
-    if all_args.cuda and torch.cuda.is_available():
+    if all_args.cuda and not torch.cuda.is_available():
         print("choose to use gpu...")
         device = torch.device("cuda:0")
         torch.set_num_threads(all_args.n_training_threads)
@@ -133,13 +133,13 @@ def main(args):
             all_args.user_name))
 
     # seed
-    torch.manual_seed(all_args.seed)
-    torch.cuda.manual_seed_all(all_args.seed)
-    np.random.seed(all_args.seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
 
     # env
     envs = make_train_env(all_args)
-    eval_envs = make_eval_env(all_args) if all_args.use_eval else None
+    eval_envs = make_eval_env(all_args)
     num_agents = get_map_params(all_args.map_name)["n_agents"]
     all_args.n_agents = num_agents
     config = {
@@ -150,6 +150,17 @@ def main(args):
         "device": device,
         "run_dir": run_dir
     }
+
+     # build populations
+    from build_population import build as Create
+
+    Create(run_dir= run_dir,
+        num_agents=num_agents+2,
+        args=all_args,
+        obs_space=envs.observation_space[0], 
+        sobs_space=envs.share_observation_space[0], 
+        act_space=envs.action_space[0],
+        device=device)
 
     # run experiments
     if all_args.share_policy:
@@ -162,7 +173,7 @@ def main(args):
 
     # post process
     envs.close()
-    if all_args.use_eval and eval_envs is not envs:
+    if eval_envs is not envs:
         eval_envs.close()
 
     if all_args.use_wandb:
@@ -173,4 +184,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    seeds = [0,1,2,3,4]
+    for i in range(len(seeds)):
+        print(seeds[i])
+        main(sys.argv[1:], seeds[i])

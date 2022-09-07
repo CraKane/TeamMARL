@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from .util import init
+import torch.nn.functional as F
 
 """
 Modify standard PyTorch distributions so they to make compatible with this codebase. 
@@ -33,8 +34,8 @@ class FixedNormal(torch.distributions.Normal):
     def log_probs(self, actions):
         return super().log_prob(actions).sum(-1, keepdim=True)
 
-    def entrop(self):
-        return super.entropy().sum(-1)
+    def entropy(self):
+        return super().entropy().sum(-1)
 
     def mode(self):
         return self.mean
@@ -69,7 +70,7 @@ class Categorical(nn.Module):
 
 
 class DiagGaussian(nn.Module):
-    def __init__(self, num_inputs, num_outputs, use_orthogonal=True, gain=0.01):
+    def __init__(self, num_inputs, num_outputs, use_orthogonal=True, gain=0.01, device=torch.device("cpu")):
         super(DiagGaussian, self).__init__()
 
         init_method = [nn.init.xavier_uniform_, nn.init.orthogonal_][use_orthogonal]
@@ -78,6 +79,8 @@ class DiagGaussian(nn.Module):
 
         self.fc_mean = init_(nn.Linear(num_inputs, num_outputs))
         self.logstd = AddBias(torch.zeros(num_outputs))
+
+        self.to(device)
 
     def forward(self, x):
         action_mean = self.fc_mean(x)
@@ -116,3 +119,28 @@ class AddBias(nn.Module):
             bias = self._bias.t().view(1, -1, 1, 1)
 
         return x + bias
+
+
+class StrategyGaussian(nn.Module):
+    def __init__(self, num_inputs, num_outputs, use_orthogonal=True, gain=0.01, device=torch.device("cpu")):
+        super(StrategyGaussian, self).__init__()
+
+        init_method = [nn.init.xavier_uniform_, nn.init.orthogonal_][use_orthogonal]
+        def init_(m): 
+            return init(m, init_method, lambda x: nn.init.constant_(x, 0), gain)
+
+        self.fc_mean = init_(nn.Linear(num_inputs, num_outputs))
+        self.logstd = init_(nn.Linear(num_inputs, num_outputs))
+
+        self.to(device)
+
+    def forward(self, x):
+        action_mean = self.fc_mean(x)
+
+        #  An ugly hack for my KFAC implementation.
+        zeros = torch.ones(action_mean.size())
+        if x.is_cuda:
+            zeros = zeros.cuda()
+
+        action_logstd = zeros  # F.softplus(self.logstd(x)) + 1e-7
+        return FixedNormal(action_mean, action_logstd)

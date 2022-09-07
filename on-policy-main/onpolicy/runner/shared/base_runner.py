@@ -27,10 +27,10 @@ class Runner(object):
             self.render_envs = config['render_envs']  
 
         if self.all_args.env_name == "MPE":
-            pool = self.num_agents+2
+            pool = self.num_agents + 2
         else:
-            pool = self.num_agents+1
-            
+            pool = self.num_agents + 1
+
         self.pers = list(combinations(range(pool), self.num_agents))     
 
         # parameters
@@ -54,7 +54,6 @@ class Runner(object):
         # interval
         self.save_interval = self.all_args.save_interval
         self.use_eval = self.all_args.use_eval
-        self.check_eval = self.all_args.check_eval
         self.eval_interval = self.all_args.eval_interval
         self.log_interval = self.all_args.log_interval
 
@@ -92,13 +91,13 @@ class Runner(object):
                             device = self.device)
 
         self.evl_policy = Policy(self.all_args,
-                                 self.eval_envs.observation_space[0],
-                                 share_observation_space,
-                                 self.eval_envs.action_space[0],
-                                 device=self.device)
+                             self.eval_envs.observation_space[0],
+                             share_observation_space,
+                             self.eval_envs.action_space[0],
+                             device=self.device)
 
         self.eval_dir = None
-        if config['eval_policy_dir'] is not None:
+        if self.use_eval and config['eval_policy_dir'] is not None:
             self.eval_dir = config['eval_policy_dir']
             self.eval_num = config['eval_policy_num']
 
@@ -138,11 +137,17 @@ class Runner(object):
     def compute(self):
         """Calculate returns for the collected data."""
         self.trainer.prep_rollout()
-        next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
+        next_values, coach_next_values = self.trainer.policy.get_values(np.concatenate(self.buffer.share_obs[-1]),
+                                                np.concatenate(self.buffer.obs[-1]),
                                                 np.concatenate(self.buffer.rnn_states_critic[-1]),
+                                                self.buffer.coach_rnn_states_critic[-1],
                                                 np.concatenate(self.buffer.masks[-1]))
         next_values = np.array(np.split(_t2n(next_values), self.n_rollout_threads))
-        self.buffer.compute_returns(next_values, self.trainer.value_normalizer)
+        coach_next_values = np.array(np.split(_t2n(coach_next_values), self.n_rollout_threads))
+        # print(next_values.shape, coach_next_values.shape)
+
+        # print(next_values.shape, coach_next_values.shape)
+        self.buffer.compute_returns(next_values, coach_next_values, self.trainer.value_normalizer)
     
     def train(self):
         """Train policies with data in buffer. """
@@ -165,9 +170,9 @@ class Runner(object):
 
     def restore(self, eval = False, team=(0, 1, 2)):
         """Restore policy's networks from a saved model."""
-        np.random.shuffle(self.pers)
-        if self.check_eval:
-            self.agent_ids = self.pers[np.random.randint(4)]
+        # np.random.shuffle(self.pers)
+        if not self.use_eval:
+            self.agent_ids = self.pers[np.random.randint(len(self.pers))]
         if self.all_args.idv_para:
             if eval:
                 for i in range(self.num_agents):
@@ -178,24 +183,14 @@ class Runner(object):
                             str(self.model_dir) + "/critic_{}.pt".format(team[i]))
                         self.evl_policy.critic[i].load_state_dict(policy_critic_state_dict)
             else:
-                num = self.all_args.my_policy if self.use_eval else self.num_agents
-                for i in range(num):
-                    # print("my policy, " + str(self.model_dir) + "/actor_{}.pt".format(self.agent_ids[i]))
+                for i in range(self.num_agents):
+                    # print("my policy, " + str(self.model_dir) + "/actor_{}.pt in position {}".format(self.agent_ids[i], i))
                     policy_actor_state_dict = torch.load(str(self.model_dir) + "/actor_{}.pt".format(self.agent_ids[i]))
                     # print(policy_actor_state_dict)
                     self.policy.actor[i].load_state_dict(policy_actor_state_dict)
                     if not self.all_args.use_render:
                         policy_critic_state_dict = torch.load(str(self.model_dir) + "/critic_{}.pt".format(self.agent_ids[i]))
                         self.policy.critic[i].load_state_dict(policy_critic_state_dict)
-                if self.eval_dir is not None:
-                    rest_num = self.num_agents-self.all_args.my_policy
-                    for i in range(rest_num):
-                        # print("other policy, " + self.eval_dir + "/actor_{}.pt".format(self.eval_num[i]))
-                        policy_actor_state_dict = torch.load(self.eval_dir + "/actor_{}.pt".format(self.eval_num[i]))
-                        self.policy.actor[self.agent_ids[i+num]].load_state_dict(policy_actor_state_dict)
-                        policy_critic_state_dict = torch.load(self.eval_dir + "/critic_{}.pt".format(self.eval_num[i]))
-                        if not self.all_args.use_render:
-                            self.policy.critic[self.agent_ids[i+num]].load_state_dict(policy_critic_state_dict)
                 
         else:
             policy_actor_state_dict = torch.load(str(self.model_dir) + '/actor.pt')

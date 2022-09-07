@@ -54,14 +54,13 @@ def parse_args(args, parser):
                         default='navigation_control_full', help="Which scenario to run on")
     parser.add_argument("--collision_penal", type=float, default=0)
     parser.add_argument("--vision", type=float, default=1)
-    parser.add_argument("--num_landmarks", type=int, default=3)
+    parser.add_argument("--num_landmarks", type=int, default=4)
     parser.add_argument('--num_agents', type=int,
-                        default=2, help="number of players")
+                        default=4, help="number of players")
 
     all_args = parser.parse_known_args(args)[0]
 
     return all_args
-
 
 def main(args, seed):
     parser = get_config()
@@ -78,7 +77,7 @@ def main(args, seed):
         "The simple_speaker_listener scenario can not use shared policy. Please check the config.py.")
 
     # cuda
-    if all_args.cuda and torch.cuda.is_available():
+    if all_args.cuda and not torch.cuda.is_available():
         print("choose to use gpu...")
         device = torch.device("cuda:0")
         torch.set_num_threads(all_args.n_training_threads)
@@ -132,7 +131,7 @@ def main(args, seed):
 
     # env init
     envs = make_train_env(all_args, seed)
-    eval_envs = make_eval_env(all_args, seed) if all_args.check_eval else None
+    eval_envs = make_eval_env(all_args, seed)
     num_agents = all_args.num_agents
     all_args.n_agents = all_args.num_agents
     config = {
@@ -141,14 +140,13 @@ def main(args, seed):
         "eval_envs": eval_envs,
         "num_agents": num_agents,
         "device": device,
-        "run_dir": run_dir,
-        "eval_policy_dir": None
+        "run_dir": run_dir
     }
 
-    # build populations
+     # build populations
     from build_population import build as Create
 
-    Create(run_dir=run_dir,
+    Create(run_dir= run_dir,
         num_agents=num_agents+2,
         args=all_args,
         obs_space=envs.observation_space[0], 
@@ -164,10 +162,10 @@ def main(args, seed):
 
     runner = Runner(config)
     runner.run()
-    
+
     # post process
     envs.close()
-    if all_args.use_eval and eval_envs is not envs:
+    if eval_envs is not envs:
         eval_envs.close()
 
     if all_args.use_wandb:
@@ -178,7 +176,7 @@ def main(args, seed):
 
 
 if __name__ == "__main__":
-    seeds = [2022, 114, 2]
+    seeds = [116, 114, 2]
     for i in range(len(seeds)):
         print(seeds[i])
         main(sys.argv[1:], seeds[i])

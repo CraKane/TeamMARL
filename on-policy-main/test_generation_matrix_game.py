@@ -12,7 +12,7 @@ import pandas as pd
 from onpolicy.config import get_config
 from gym.spaces import Discrete
 from tensorboardX import SummaryWriter
-from tqdm import tqdm,trange
+from tqdm import trange, tqdm
 
 """Train script for SMAC."""
 
@@ -237,9 +237,10 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
         device = torch.device("cpu")
         torch.set_num_threads(all_args.n_training_threads)
 
-    run_dir = '../../results/population_idv_mappo_turn_update/'
+    run_dir = '../../results/matrixGame/population_idv_mappo_total_update/'
     run_dir = run_dir + 'run{}'.format(i)
     run_dir = Path(run_dir)
+
 
     if all_args.use_wandb:
         run = wandb.init(config=all_args,
@@ -255,7 +256,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
                          reinit=True)
     else:
         print("tensorboard log")
-
+        
     setproctitle.setproctitle(
         str(all_args.algorithm_name) + "-" + str(all_args.env_name) + "-" + str(all_args.experiment_name) + "@" + str(
             all_args.user_name))
@@ -268,7 +269,7 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
     # env
     all_args.map_name = 'random_matrix_game_3_symmetric'
     envs = make_mat_game_from_file('{}.pkl'.format(all_args.map_name))
-    eval_envs = make_mat_game_from_file('{}.pkl'.format(all_args.map_name)) if all_args.use_eval else None
+    eval_envs =  make_mat_game_from_file('{}.pkl'.format(all_args.map_name))
     env_info = envs.get_env_info()
     num_agents = env_info["n_agents"]
     all_args.num_agents = num_agents
@@ -280,64 +281,48 @@ def main(args, seed, i, fix_action=None, test_run=None, test_model=None, test_po
         "num_agents": num_agents,
         "device": device,
         "run_dir": run_dir,
-        "eval_policy_dir": '../../results/' + test_policy + '/run{}/models'.format(test_run) if test_run else None,
+        "eval_policy_dir": '../../results/matrixGame/' + test_policy + '/run{}/models'.format(test_run) if test_run else None,
         "eval_policy_num": test_model if test_model is not None else None,
     }
 
     # run experiments
     from onpolicy.runner.shared.test_matrix_runner import MatrixRunner as Runner
 
-    # create combination
-    from itertools import combinations
+    runner = Runner(config)
+    mean_reward = runner.run(fix_action, test_policy, test_run)
 
-    pers = list(combinations(range(num_agents + 1), 2))
-    np.random.shuffle(pers)
+    # post process
+    envs.reset()
+    if eval_envs is not envs:
+        eval_envs.reset()
 
-    mean_rewards = []
-    for per in pers:
-        print(per)
-        config['agent_ids'] = per
-        runner = Runner(config)
-        mean_reward = runner.run(fix_action)
-        mean_rewards.append(mean_reward)
+    if all_args.use_wandb:
+        run.finish()
+    else:
+        runner.writter.export_scalars_to_json(str(runner.log_dir + '/summary.json'))
+        runner.writter.close()
 
-        # post process
-        envs.reset()
-        if all_args.use_eval and eval_envs is not envs:
-            eval_envs.reset()
-
-        if all_args.use_wandb:
-            run.finish()
-        else:
-            runner.writter.export_scalars_to_json(str(runner.log_dir + '/summary.json'))
-            runner.writter.close()
-
-    return np.mean(np.array(mean_rewards)) * num_agents
+    return mean_rewards * num_agents
 
 
 if __name__ == "__main__":
     seeds = [2021, 2022, 114, 2, 2021114]
-    test_policy_list = ['control_idv_mappo', 'population_idv_mappo', 'population_idv_mappo_total_update']
+    test_policy_list = ['4-3-mappo', '4-3-each_update', '4-3-turn_update', '4-3-total_update', '4-4-mappo', '4-4-mappo_role', '4-4-mappo_std_fixed']
+    mean_rewards = []
     for i in range(len(seeds)):
         print('seed = {}'.format(seeds[i]))
-        mean_rewards = []
-        for j in trange(5):
-            mean_reward = main(sys.argv[1:], seeds[i], i + 1, fix_action=j)
+        for j in trange(5):  # how many seeds we have
+            mean_reward = main(sys.argv[1:], seeds[i], i+1, fix_action=j)
             print('mean_episode_reward = {}, fix_action = {}'.format(mean_reward, j))
             mean_rewards.append(mean_reward)
         for test_policy in tqdm(test_policy_list):
-            for j in range(5):
-                num = 3 if test_policy == 'control_idv_mappo' else 4
+            for j in range(5):  # how many seeds we have
+                num = 3 if 'mappo' in test_policy else 4
                 for k in range(num):
                     mean_reward = main(sys.argv[1:], seeds[i], i + 1, test_run=j+1, test_model=k, test_policy=test_policy)
-                    print('mean_episode_reward = {}, model = {}_run{}_{}'.format(mean_reward, test_policy, j + 1, k))
+                    print('mean_episode_reward = {}, model = {}_run{}_{}'.format(mean_reward, test_policy, j+1, k))
                     mean_rewards.append(mean_reward)
 
-        seed = np.ones(len(mean_rewards)) * (i + 1)
-        if i == 0:
-            res = pd.DataFrame({'seed': seed, 'mean_episode_reward': mean_rewards})
-        else:
-            tmp = pd.DataFrame({'seed': seed, 'mean_episode_reward': mean_rewards})
-            res = res.append(tmp)
-    print(res)
-    res.to_csv('../../results/mappo_turn_update_test_generalization_result.csv', index=False)
+    av_reward = np.mean(mean_rewards)
+
+    print(av_reward)
